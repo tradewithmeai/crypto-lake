@@ -1,0 +1,1341 @@
+[BUILD START]
+
+# FILE: main.py
+
+# Summary: CLI entrypoint that dispatches to collector, transformer, validator, and compactor per config.yml. Built from the "Crypto Data Lake Project – Detailed Build Plan". 
+
+import argparse
+import asyncio
+import os
+import sys
+from loguru import logger
+
+# Local modules
+
+from tools.common import load_config, setup_logging
+from collector.collector import run_collector
+from transformer.transformer import run_transformer
+from tools.validator import run_validator
+from storage.compactor import run_compactor
+
+def parse_args() -> argparse.Namespace:
+parser = argparse.ArgumentParser(description="Crypto Data Lake")
+parser.add_argument(
+"--mode",
+choices=["collector", "transformer", "validate", "compact"],
+required=True,
+help="Pipeline mode to run.",
+)
+parser.add_argument(
+"--date",
+type=str,
+default=None,
+help="Optional date (YYYY-MM-DD) to process for transformer/validate/compact.",
+)
+parser.add_argument(
+"--symbols",
+type=str,
+default=None,
+help="Optional comma-separated symbol list to override config.",
+)
+parser.add_argument(
+"--exchange",
+type=str,
+default="binance",
+help="Exchange name from config to use (default: binance).",
+)
+parser.add_argument(
+"--config",
+type=str,
+default="config.yml",
+help="Path to config.yml (default: ./config.yml).",
+)
+return parser.parse_args()
+
+def get_symbols_override(arg_symbols: str | None) -> list[str] | None:
+if not arg_symbols:
+return None
+syms = [s.strip().upper() for s in arg_symbols.split(",") if s.strip()]
+return syms or None
+
+def main() -> None:
+args = parse_args()
+config = load_config(args.config)
+setup_logging("main", config)
+
+```
+symbols_override = get_symbols_override(args.symbols)
+
+if args.mode == "collector":
+    # Collector is async
+    asyncio.run(run_collector(config, exchange_name=args.exchange, symbols=symbols_override))
+    return
+
+if args.mode == "transformer":
+    run_transformer(config, exchange_name=args.exchange, date=args.date, symbols=symbols_override)
+    return
+
+if args.mode == "validate":
+    run_validator(config, exchange_name=args.exchange, date=args.date, symbols=symbols_override)
+    return
+
+if args.mode == "compact":
+    run_compactor(config, exchange_name=args.exchange, date=args.date, symbols=symbols_override)
+    return
+```
+
+if **name** == "**main**":
+try:
+main()
+except KeyboardInterrupt:
+logger.warning("Interrupted by user (Ctrl+C). Exiting...")
+try:
+sys.exit(130)
+except SystemExit:
+os._exit(130)
+
+# FILE: config.yml
+
+# Summary: Runtime configuration for paths, logging, exchange endpoints, and job parameters.
+
+general:
+timezone: "UTC"
+log_level: "INFO"
+base_path: "D:/CryptoDataLake"
+
+exchanges:
+
+* name: "binance"
+  symbols: ["SOLUSDT", "SUIUSDT", "ADAUSDT"]
+  rest_url: "[https://api.binance.com/api/v3](https://api.binance.com/api/v3)"
+  wss_url: "wss://stream.binance.com:9443/ws"
+
+collector:
+write_interval_sec: 60
+reconnect_backoff: 10
+output_format: "jsonl"
+
+transformer:
+resample_interval_sec: 1
+parquet_compression: "snappy"
+
+# FILE: collector/**init**.py
+
+# Summary: Package init for collector components.
+
+# FILE: collector/collector.py
+
+# Summary: Real-time Binance WebSocket collector with auto-reconnect, rotating JSONL files, and graceful shutdown.
+
+import asyncio
+import json
+import os
+import signal
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
+
+import websockets
+from loguru import logger
+
+from tools.common import (
+ensure_dir,
+ensure_parent_dir,
+get_exchange_config,
+get_local_date_str_utc,
+get_raw_base_dir,
+setup_logging,
+)
+
+@dataclass
+class RotatingJSONLWriter:
+base_dir: str
+symbol: str
+interval_sec: int = 60
+current_date: str = field(default_factory=get_local_date_str_utc)
+part_index: int = 0
+next_rotation_epoch: float = field(default_factory=lambda: 0.0)
+fp: Optional[Any] = None
+
+```
+def _resolve_dir(self, date_str: str) -> str:
+    dirpath = os.path.join(self.base_dir, self.symbol, date_str)
+    ensure_dir(dirpath)
+    return dirpath
+
+def _next_part_index(self, dirpath: str) -> int:
+    # Determine next part number by scanning directory once per day rollover
+    try:
+        files = [f for f in os.listdir(dirpath) if f.lower().endswith(".jsonl")]
+        max_part = 0
+        for f in files:
+            # Expect pattern part_XXX.jsonl
+            name = os.path.splitext(f)[0]
+            if name.startswith("part_"):
+                try:
+                    idx = int(name.split("_")[1])
+                    if idx > max_part:
+                        max_part = idx
+                except Exception:
+                    continue
+        return max_part + 1
+    except FileNotFoundError:
+        return 1
+
+def _open_new_file(self, now_epoch: float) -> None:
+    date_str = get_local_date_str_utc(epoch=now_epoch)
+    if date_str != self.current_date:
+        self.current_date = date_str
+        self.part_index = 0  # will be incremented to 1 below
+
+    dirpath = self._resolve_dir(self.current_date)
+    if self.part_index == 0:
+        self.part_index = self._next_part_index(dirpath)
+
+    filename = f"part_{self.part_index:03d}.jsonl"
+    path = os.path.join(dirpath, filename)
+    ensure_parent_dir(path)
+    if self.fp:
+        try:
+            self.fp.flush()
+            self.fp.close()
+        except Exception:
+            pass
+    self.fp = open(path, "a", encoding="utf-8")
+    # Set next rotation boundary
+    window = int(now_epoch // self.interval_sec) * self.interval_sec
+    self.next_rotation_epoch = float(window + self.interval_sec)
+    logger.info(f"[Writer] Opened {path}; next rotation at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(self.next_rotation_epoch))} UTC")
+
+def _rotate_if_needed(self, now_epoch: float) -> None:
+    if self.fp is None:
+        self._open_new_file(now_epoch)
+        return
+    if now_epoch >= self.next_rotation_epoch:
+        self.part_index += 1
+        self._open_new_file(now_epoch)
+
+def write_obj(self, obj: Dict[str, Any], now_epoch: Optional[float] = None) -> None:
+    t = time.time() if now_epoch is None else now_epoch
+    self._rotate_if_needed(t)
+    if self.fp:
+        line = json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+        self.fp.write(line + "\n")
+
+def close(self) -> None:
+    if self.fp:
+        try:
+            self.fp.flush()
+            self.fp.close()
+        except Exception:
+            pass
+        self.fp = None
+```
+
+def parse_event(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+"""
+Parse Binance combined-stream or ws-subscription message into a normalized record.
+Returns a dict with keys: symbol, ts_event, ts_recv, price, qty, side, bid, ask, stream.
+"""
+try:
+# Combined stream payload includes {"stream": "...", "data": {...}}
+stream = message.get("stream")
+data = message.get("data", message)
+
+```
+    # Derive type
+    if stream:
+        if "@trade" in stream:
+            typ = "trade"
+        elif "@bookTicker" in stream:
+            typ = "bookTicker"
+        else:
+            typ = data.get("e", "unknown")
+    else:
+        etype = str(data.get("e", "")).lower()
+        if "trade" in etype:
+            typ = "trade"
+        elif "bookticker" in etype:
+            typ = "bookTicker"
+        else:
+            typ = etype or "unknown"
+
+    symbol = str(data.get("s", "")).upper()
+    ts_event = int(data.get("E") or data.get("T") or int(time.time() * 1000))
+    ts_recv = int(time.time() * 1000)
+
+    price = None
+    qty = None
+    side = None
+    bid = None
+    ask = None
+
+    if typ == "trade":
+        # Trade payload: p (price), q (qty), m (is buyer maker)
+        p = data.get("p")
+        q = data.get("q")
+        if p is not None:
+            price = float(p)
+        if q is not None:
+            qty = float(q)
+        mflag = data.get("m")
+        side = "sell" if bool(mflag) else "buy"
+    elif typ == "bookTicker":
+        # Best bid/ask payload: b (bid price), a (ask price)
+        b = data.get("b")
+        a = data.get("a")
+        if b is not None:
+            bid = float(b)
+        if a is not None:
+            ask = float(a)
+
+    record = {
+        "symbol": symbol,
+        "ts_event": ts_event,
+        "ts_recv": ts_recv,
+        "price": price,
+        "qty": qty,
+        "side": side,
+        "bid": bid,
+        "ask": ask,
+        "stream": typ,
+    }
+    return record
+except Exception as e:
+    logger.exception(f"Failed to parse event message: {e}")
+    return None
+```
+
+def build_combined_stream_url(wss_url: str, symbols: list[str]) -> str:
+"""
+Build Binance combined stream URL for trade and bookTicker per symbol.
+Example: wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@bookTicker
+"""
+# Ensure base combined endpoint
+base = wss_url.replace("/ws", "/stream?streams=").rstrip("/")
+topics: list[str] = []
+for s in symbols:
+ls = s.lower()
+topics.append(f"{ls}@trade")
+topics.append(f"{ls}@bookTicker")
+return base + "/".join(topics)
+
+async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_event: asyncio.Event) -> None:
+async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10, max_queue=2000) as ws:
+logger.info(f"Connected to {url}")
+while not stop_event.is_set():
+try:
+raw = await asyncio.wait_for(ws.recv(), timeout=60)
+except asyncio.TimeoutError:
+# Periodic timeout—send a ping by letting websockets handle keepalive; continue loop
+continue
+except websockets.ConnectionClosed:
+logger.warning("WebSocket connection closed by server.")
+raise
+except Exception as e:
+logger.error(f"WebSocket receive error: {e}")
+raise
+
+```
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            logger.warning("Received non-JSON message; skipping.")
+            continue
+
+        rec = parse_event(msg)
+        if not rec or not rec.get("symbol"):
+            continue
+        sym = rec["symbol"]
+        writer = writers.get(sym)
+        if writer:
+            writer.write_obj(rec)
+        # Optional latency log
+        try:
+            latency_ms = rec["ts_recv"] - rec["ts_event"]
+            if latency_ms > 2000:
+                logger.warning(f"High latency for {sym}: {latency_ms} ms")
+        except Exception:
+            pass
+```
+
+async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", symbols: Optional[list[str]] = None) -> None:
+"""
+Run the streaming collector with auto-reconnect and graceful shutdown (Ctrl+C).
+"""
+setup_logging("collector", config)
+ex_conf = get_exchange_config(config, exchange_name)
+
+```
+if symbols is None or not symbols:
+    symbols = ex_conf.get("symbols", [])
+logger.info(f"Starting collector for exchange={exchange_name} symbols={symbols}")
+
+raw_root = get_raw_base_dir(config, exchange_name)
+writers: Dict[str, RotatingJSONLWriter] = {}
+for s in symbols:
+    writers[s] = RotatingJSONLWriter(base_dir=raw_root, symbol=s, interval_sec=int(config["collector"]["write_interval_sec"]))
+
+url = build_combined_stream_url(ex_conf["wss_url"], symbols)
+
+stop_event = asyncio.Event()
+
+def _graceful_shutdown(*_args):
+    logger.warning("Shutdown signal received. Stopping collector...")
+    stop_event.set()
+
+# Register signal handlers (may be limited on Windows/asyncio)
+try:
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _graceful_shutdown)
+except NotImplementedError:
+    # Windows may not support add_signal_handler for SIGINT in Proactor
+    pass
+
+backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
+max_backoff = 60
+
+try:
+    while not stop_event.is_set():
+        try:
+            await _consume_ws(url, writers, stop_event)
+            # If consume returns without exception and no stop requested, break
+            if not stop_event.is_set():
+                logger.warning("WebSocket consume ended unexpectedly; will reconnect.")
+                await asyncio.sleep(backoff)
+                backoff = min(max_backoff, backoff * 2)
+        except Exception as e:
+            logger.error(f"Collector error / reconnecting in {backoff}s: {e}")
+            await asyncio.sleep(backoff)
+            backoff = min(max_backoff, max(5, backoff * 2))
+        else:
+            # Successful iteration; reset backoff
+            backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
+finally:
+    for w in writers.values():
+        w.close()
+    logger.info("Collector stopped cleanly.")
+```
+
+# FILE: transformer/**init**.py
+
+# Summary: Package init for transformer components.
+
+# FILE: transformer/transformer.py
+
+# Summary: Transformer converting raw JSONL events to 1-second OHLCV bars + L1 quotes, writing Parquet partitions.
+
+import glob
+import json
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from loguru import logger
+
+from tools.common import (
+ensure_dir,
+get_exchange_config,
+get_parquet_symbol_root,
+get_raw_symbol_day_dir,
+setup_logging,
+to_utc_dt,
+)
+
+def _load_jsonl_files(file_paths: List[str]) -> pd.DataFrame:
+frames: List[pd.DataFrame] = []
+for fp in sorted(file_paths):
+try:
+with open(fp, "r", encoding="utf-8") as f:
+# Stream-append to a list of records
+records = [json.loads(line) for line in f if line.strip()]
+if records:
+frames.append(pd.DataFrame.from_records(records))
+except Exception as e:
+logger.error(f"Failed to read {fp}: {e}")
+if not frames:
+return pd.DataFrame(columns=["symbol", "ts_event", "ts_recv", "price", "qty", "side", "bid", "ask", "stream"])
+return pd.concat(frames, ignore_index=True)
+
+def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.DataFrame:
+if df.empty:
+return pd.DataFrame()
+
+```
+# Timestamps
+df = df.copy()
+df["ts"] = pd.to_datetime(df["ts_event"], unit="ms", utc=True)
+df["sec"] = df["ts"].dt.floor(f"{second}S")
+
+# Trade-based OHLCV
+trades = df[df["stream"] == "trade"].copy()
+quotes = df[df["stream"] == "bookTicker"].copy()
+
+bars = []
+if not trades.empty:
+    trades["price"] = pd.to_numeric(trades["price"])
+    trades["qty"] = pd.to_numeric(trades["qty"])
+    trades["pq"] = trades["price"] * trades["qty"]
+
+    agg = trades.groupby("sec").agg(
+        open=("price", "first"),
+        high=("price", "max"),
+        low=("price", "min"),
+        close=("price", "last"),
+        volume_base=("qty", "sum"),
+        volume_quote=("pq", "sum"),
+        trade_count=("price", "count"),
+    )
+    agg["vwap"] = (agg["volume_quote"] / agg["volume_base"]).where(agg["volume_base"] > 0, agg["close"])
+    bars.append(agg)
+
+if bars:
+    bars_df = bars[0]
+else:
+    # No trades present, create empty bar frame
+    bars_df = pd.DataFrame(columns=["open", "high", "low", "close", "volume_base", "volume_quote", "trade_count", "vwap"])
+
+# Quote snapshots (last bid/ask per second)
+if not quotes.empty:
+    quotes["bid"] = pd.to_numeric(quotes["bid"])
+    quotes["ask"] = pd.to_numeric(quotes["ask"])
+    q_agg = quotes.sort_values("ts").groupby("sec").agg(bid=("bid", "last"), ask=("ask", "last"))
+    bars_df = bars_df.join(q_agg, how="outer")
+
+# Spread
+if "bid" in bars_df.columns and "ask" in bars_df.columns:
+    bars_df["spread"] = (bars_df["ask"] - bars_df["bid"]).where((bars_df["ask"].notna()) & (bars_df["bid"].notna()))
+
+# Reindex to fill gaps
+if not df.empty:
+    full_index = pd.date_range(df["sec"].min(), df["sec"].max(), freq=f"{second}S", tz=timezone.utc)
+    bars_df = bars_df.reindex(full_index)
+
+# Forward-fill close into open/high/low/close for missing rows, zero-fill volumes
+bars_df["close"] = bars_df["close"].ffill()
+for col in ("open", "high", "low"):
+    bars_df[col] = bars_df[col].fillna(bars_df["close"])
+for col in ("volume_base", "volume_quote", "trade_count"):
+    if col in bars_df.columns:
+        bars_df[col] = bars_df[col].fillna(0)
+if "vwap" in bars_df.columns:
+    bars_df["vwap"] = bars_df["vwap"].fillna(bars_df["close"])
+if "bid" in bars_df.columns:
+    bars_df["bid"] = bars_df["bid"].ffill()
+if "ask" in bars_df.columns:
+    bars_df["ask"] = bars_df["ask"].ffill()
+if "spread" in bars_df.columns:
+    bars_df["spread"] = bars_df["spread"].ffill()
+
+# Finalize schema
+out = bars_df.reset_index().rename(columns={"index": "window_start"})
+out["symbol"] = symbol
+# Ensure types
+numerics = ["open", "high", "low", "close", "volume_base", "volume_quote", "trade_count", "vwap", "bid", "ask", "spread"]
+for c in numerics:
+    if c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+return out
+```
+
+def _write_parquet_partitioned(df: pd.DataFrame, root: str, compression: str) -> None:
+if df.empty:
+return
+# Add partitions
+df = df.copy()
+df["year"] = df["window_start"].dt.year
+df["month"] = df["window_start"].dt.month
+df["day"] = df["window_start"].dt.day
+
+```
+# Partition by year/month/day under symbol root
+table = pa.Table.from_pandas(df, preserve_index=False)
+pq.write_to_dataset(table, root_path=root, partition_cols=["year", "month", "day"], compression=compression, use_legacy_dataset=False)
+```
+
+def transform_symbol_day(
+config: Dict[str, Any],
+exchange_name: str,
+symbol: str,
+date: str,
+resample_interval_sec: int,
+) -> Optional[str]:
+"""
+Transform a single symbol/day from raw JSONL to Parquet 1-second bars.
+Returns path to symbol root where Parquet partitions were written, or None.
+"""
+raw_dir = get_raw_symbol_day_dir(config, exchange_name, symbol, date)
+files = sorted(glob.glob(os.path.join(raw_dir, "*.jsonl")))
+if not files:
+logger.warning(f"No raw files for {symbol} on {date}")
+return None
+
+```
+df = _load_jsonl_files(files)
+if df.empty:
+    logger.warning(f"No events parsed for {symbol} on {date}")
+    return None
+
+out = _aggregate_bars_1s(df, symbol, second=resample_interval_sec)
+if out.empty:
+    logger.warning(f"No output bars for {symbol} on {date}")
+    return None
+
+# Ensure datetime type is timezone-aware UTC
+out["window_start"] = pd.to_datetime(out["window_start"], utc=True)
+
+root = get_parquet_symbol_root(config, exchange_name, symbol)
+ensure_dir(root)
+compression = str(config["transformer"].get("parquet_compression", "snappy"))
+_write_parquet_partitioned(out, root, compression)
+logger.info(f"Wrote Parquet partitions for {symbol} at {root}")
+return root
+```
+
+def run_transformer(
+config: Dict[str, Any],
+exchange_name: str = "binance",
+date: Optional[str] = None,
+symbols: Optional[List[str]] = None,
+) -> None:
+"""
+Run transformer for the provided date (default: today's UTC date) and symbol list from config if not provided.
+"""
+setup_logging("transformer", config)
+ex = get_exchange_config(config, exchange_name)
+if not symbols:
+symbols = ex.get("symbols", [])
+
+```
+if not date:
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+interval = int(config["transformer"].get("resample_interval_sec", 1))
+for sym in symbols:
+    try:
+        transform_symbol_day(config, exchange_name, sym, date, interval)
+    except Exception as e:
+        logger.exception(f"Transformer failed for {sym} {date}: {e}")
+```
+
+# FILE: storage/**init**.py
+
+# Summary: Package init for storage components.
+
+# FILE: storage/compactor.py
+
+# Summary: Compacts per-day per-symbol Parquet partitions into a single daily Parquet, validates continuity and logs hash.
+
+import glob
+import hashlib
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import duckdb
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from loguru import logger
+
+from tools.common import (
+ensure_dir,
+get_parquet_symbol_root,
+setup_logging,
+)
+
+def _read_partitions_to_df(symbol_root: str, date: str) -> pd.DataFrame:
+year, month, day = date.split("-")
+pattern = os.path.join(symbol_root, f"year={int(year)}", f"month={int(month)}", f"day={int(day)}", "*.parquet")
+# Use DuckDB to efficiently read all partitions
+con = duckdb.connect()
+try:
+q = f"SELECT * FROM read_parquet('{pattern.replace('\', '\\')}')"
+df = con.execute(q).fetch_df()
+finally:
+con.close()
+# Ensure sorted
+if not df.empty:
+df["window_start"] = pd.to_datetime(df["window_start"], utc=True)
+df = df.sort_values("window_start").drop_duplicates(subset=["window_start"])
+return df
+
+def _hash_dataframe(df: pd.DataFrame) -> str:
+# Compute a stable hash over values
+# Convert to Arrow and then to bytes
+table = pa.Table.from_pandas(df, preserve_index=False)
+sink = pa.BufferOutputStream()
+pq.write_table(table, sink)
+data = sink.getvalue().to_pybytes()
+return hashlib.sha256(data).hexdigest()
+
+def _validate_continuity(df: pd.DataFrame) -> Dict[str, Any]:
+result = {"missing": 0, "duplicates": 0}
+if df.empty:
+return result
+s = df["window_start"].sort_values()
+diffs = (s.diff().dt.total_seconds().fillna(1)).astype(int)
+# Count gaps where step != 1s
+gaps = (diffs > 1).sum()
+result["missing"] = int(gaps)
+# Duplicates already dropped
+result["duplicates"] = 0
+return result
+
+def run_compactor(config: Dict[str, Any], exchange_name: str = "binance", date: Optional[str] = None, symbols: Optional[List[str]] = None) -> None:
+setup_logging("compactor", config)
+if not date:
+date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+```
+ex_symbols = symbols or next((ex["symbols"] for ex in config["exchanges"] if ex["name"].lower() == exchange_name.lower()), [])
+for sym in ex_symbols:
+    try:
+        symbol_root = get_parquet_symbol_root(config, exchange_name, sym)
+        df = _read_partitions_to_df(symbol_root, date)
+        if df.empty:
+            logger.warning(f"No Parquet partitions found for {sym} on {date}")
+            continue
+
+        # Select and order columns
+        cols_order = [
+            "symbol",
+            "window_start",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume_base",
+            "volume_quote",
+            "trade_count",
+            "vwap",
+            "bid",
+            "ask",
+            "spread",
+            "year",
+            "month",
+            "day",
+        ]
+        df = df[[c for c in cols_order if c in df.columns]].sort_values("window_start")
+
+        # Validate
+        v = _validate_continuity(df)
+        h = _hash_dataframe(df)
+        logger.info(f"Compactor {sym} {date}: missing={v['missing']} duplicates={v['duplicates']} sha256={h}")
+
+        # Write daily file
+        daily_name = f"{date}.parquet"
+        out_path = os.path.join(symbol_root, daily_name)
+        ensure_dir(symbol_root)
+        table = pa.Table.from_pandas(df.drop(columns=["year", "month", "day"], errors="ignore"), preserve_index=False)
+        pq.write_table(table, out_path, compression="snappy")
+        logger.info(f"Wrote compacted daily file: {out_path}")
+    except Exception as e:
+        logger.exception(f"Compactor failed for {sym} {date}: {e}")
+```
+
+# FILE: tools/**init**.py
+
+# Summary: Package init for tools utilities.
+
+# FILE: tools/common.py
+
+# Summary: Shared helpers: config loading, logging, and data lake path utilities.
+
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from loguru import logger
+import yaml
+
+def load_config(path: str = "config.yml") -> Dict[str, Any]:
+with open(path, "r", encoding="utf-8") as f:
+return yaml.safe_load(f)
+
+def setup_logging(app_name: str, config: Dict[str, Any]) -> None:
+base = config["general"]["base_path"]
+logs_dir = os.path.join(base, "logs")
+os.makedirs(logs_dir, exist_ok=True)
+level = str(config["general"].get("log_level", "INFO")).upper()
+log_path = os.path.join(logs_dir, f"{app_name}.log")
+logger.remove()
+logger.add(
+log_path,
+rotation="00:00",
+retention="14 days",
+level=level,
+backtrace=True,
+diagnose=False,
+enqueue=False,
+format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+)
+logger.add(
+lambda msg: print(msg, end=""),
+level=level,
+colorize=True,
+format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+)
+
+def ensure_dir(path: str) -> None:
+os.makedirs(path, exist_ok=True)
+
+def ensure_parent_dir(path: str) -> None:
+parent = os.path.dirname(path)
+if parent:
+os.makedirs(parent, exist_ok=True)
+
+def get_exchange_config(config: Dict[str, Any], name: str) -> Dict[str, Any]:
+for ex in config.get("exchanges", []):
+if ex.get("name", "").lower() == name.lower():
+return ex
+raise ValueError(f"Exchange config not found: {name}")
+
+def get_raw_base_dir(config: Dict[str, Any], exchange_name: str) -> str:
+return os.path.join(config["general"]["base_path"], "raw", exchange_name)
+
+def get_raw_symbol_day_dir(config: Dict[str, Any], exchange_name: str, symbol: str, date: str) -> str:
+return os.path.join(get_raw_base_dir(config, exchange_name), symbol, date)
+
+def get_parquet_exchange_root(config: Dict[str, Any], exchange_name: str) -> str:
+return os.path.join(config["general"]["base_path"], "parquet", exchange_name)
+
+def get_parquet_symbol_root(config: Dict[str, Any], exchange_name: str, symbol: str) -> str:
+return os.path.join(get_parquet_exchange_root(config, exchange_name), symbol)
+
+def get_backfill_symbol_root(config: Dict[str, Any], exchange_name: str, symbol: str) -> str:
+return os.path.join(config["general"]["base_path"], "backfill", exchange_name, symbol)
+
+def to_utc_dt(dt: datetime | None = None) -> datetime:
+return (dt or datetime.utcnow()).replace(tzinfo=timezone.utc)
+
+def get_local_date_str_utc(epoch: Optional[float] = None) -> str:
+if epoch is None:
+return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+
+# FILE: tools/validator.py
+
+# Summary: Validator for Parquet outputs: schema integrity, missing timestamps, duplicates, and downtime checks with reports.
+
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import duckdb
+import pandas as pd
+from loguru import logger
+
+from tools.common import (
+ensure_dir,
+get_parquet_symbol_root,
+setup_logging,
+)
+
+EXPECTED_COLUMNS = [
+"symbol",
+"window_start",
+"open",
+"high",
+"low",
+"close",
+"volume_base",
+"volume_quote",
+"trade_count",
+"vwap",
+"bid",
+"ask",
+"spread",
+]
+
+def _read_daily(symbol_root: str, date: str) -> pd.DataFrame:
+daily_path = os.path.join(symbol_root, f"{date}.parquet")
+if not os.path.exists(daily_path):
+# Fallback: read partitioned
+y, m, d = date.split("-")
+pattern = os.path.join(symbol_root, f"year={int(y)}", f"month={int(m)}", f"day={int(d)}", "*.parquet")
+else:
+pattern = daily_path
+con = duckdb.connect()
+try:
+q = f"SELECT * FROM read_parquet('{pattern.replace('\', '\\')}')"
+df = con.execute(q).fetch_df()
+finally:
+con.close()
+if not df.empty:
+df["window_start"] = pd.to_datetime(df["window_start"], utc=True)
+df = df.sort_values("window_start")
+return df
+
+def _check_schema(df: pd.DataFrame) -> List[str]:
+missing = [c for c in EXPECTED_COLUMNS if c not in df.columns]
+return missing
+
+def _find_missing_seconds(df: pd.DataFrame) -> int:
+if df.empty:
+return 0
+s = df["window_start"]
+diffs = s.diff().dt.total_seconds().fillna(1)
+return int((diffs > 1).sum())
+
+def _find_duplicates(df: pd.DataFrame) -> int:
+if df.empty:
+return 0
+return int(df.duplicated(subset=["window_start"]).sum())
+
+def *write_report(logs_dir: str, exchange: str, symbol: str, date: str, report: Dict[str, Any]) -> str:
+out_dir = os.path.join(logs_dir, "validation")
+ensure_dir(out_dir)
+path = os.path.join(out_dir, f"{exchange}*{symbol}_{date}.txt")
+lines = [f"{k}: {v}" for k, v in report.items()]
+with open(path, "w", encoding="utf-8") as f:
+f.write("\n".join(lines))
+return path
+
+def run_validator(config: Dict[str, Any], exchange_name: str = "binance", date: Optional[str] = None, symbols: Optional[List[str]] = None) -> None:
+setup_logging("validation", config)
+if not date:
+date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+logs_dir = os.path.join(config["general"]["base_path"], "logs")
+
+```
+ex_symbols = symbols or next((ex["symbols"] for ex in config["exchanges"] if ex["name"].lower() == exchange_name.lower()), [])
+for sym in ex_symbols:
+    try:
+        symbol_root = get_parquet_symbol_root(config, exchange_name, sym)
+        df = _read_daily(symbol_root, date)
+        report = {
+            "exchange": exchange_name,
+            "symbol": sym,
+            "date": date,
+            "rows": int(len(df)),
+            "schema_missing": _check_schema(df),
+            "missing_seconds": _find_missing_seconds(df),
+            "duplicates": _find_duplicates(df),
+        }
+        path = _write_report(logs_dir, exchange_name, sym, date, report)
+        logger.info(f"Validation report written: {path}")
+    except Exception as e:
+        logger.exception(f"Validation failed for {sym} {date}: {e}")
+```
+
+# FILE: tools/backfill.py
+
+# Summary: Backfill 90 days of 1-minute candles from Binance REST, saved as Parquet with matching schema fields.
+
+import asyncio
+import math
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from loguru import logger
+
+from tools.common import (
+ensure_dir,
+get_backfill_symbol_root,
+get_exchange_config,
+setup_logging,
+)
+
+BINANCE_LIMIT = 1000  # per klines request
+
+async def _fetch_with_retry(session: aiohttp.ClientSession, url: str, params: Dict[str, Any], retries: int = 5, backoff: float = 1.5) -> List[Any]:
+attempt = 0
+while True:
+try:
+async with session.get(url, params=params, timeout=30) as resp:
+if resp.status == 200:
+return await resp.json()
+text = await resp.text()
+raise RuntimeError(f"HTTP {resp.status}: {text}")
+except Exception as e:
+attempt += 1
+if attempt > retries:
+raise
+sleep_for = backoff ** attempt
+logger.warning(f"REST error ({e}); retrying in {sleep_for:.1f}s")
+await asyncio.sleep(sleep_for)
+
+def _klines_to_df(rows: List[List[Any]], symbol: str) -> pd.DataFrame:
+if not rows:
+return pd.DataFrame()
+# Binance kline spec (open time, open, high, low, close, volume, close time, quote volume, trades, taker buy base, taker buy quote, ignore)
+cols = [
+"open_time",
+"open",
+"high",
+"low",
+"close",
+"volume_base",
+"close_time",
+"volume_quote",
+"trade_count",
+"taker_buy_base",
+"taker_buy_quote",
+"ignore",
+]
+df = pd.DataFrame(rows, columns=cols)
+for c in ("open", "high", "low", "close", "volume_base", "volume_quote"):
+df[c] = pd.to_numeric(df[c], errors="coerce")
+df["window_start"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+df["symbol"] = symbol
+# Approximate vwap as quote/base
+df["vwap"] = (df["volume_quote"] / df["volume_base"]).where(df["volume_base"] > 0, df["close"])
+# Placeholders for 1m-level fields that 1s has
+df["bid"] = pd.NA
+df["ask"] = pd.NA
+df["spread"] = pd.NA
+return df[["symbol", "window_start", "open", "high", "low", "close", "volume_base", "volume_quote", "trade_count", "vwap", "bid", "ask", "spread"]]
+
+async def _backfill_symbol(session: aiohttp.ClientSession, base_url: str, symbol: str, start_ts_ms: int, end_ts_ms: int, out_root: str) -> None:
+ensure_dir(out_root)
+params = {"symbol": symbol, "interval": "1m", "limit": BINANCE_LIMIT}
+current = start_ts_ms
+files_written = 0
+while current < end_ts_ms:
+params["startTime"] = current
+params["endTime"] = min(current + BINANCE_LIMIT * 60_000, end_ts_ms - 1)
+rows = await _fetch_with_retry(session, f"{base_url}/klines", params)
+if not rows:
+current = params["endTime"] + 1
+continue
+
+```
+    df = _klines_to_df(rows, symbol)
+    if df.empty:
+        current = params["endTime"] + 1
+        continue
+
+    # Partition by date
+    df["year"] = df["window_start"].dt.year
+    df["month"] = df["window_start"].dt.month
+    df["day"] = df["window_start"].dt.day
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    pq.write_to_dataset(table, root_path=out_root, partition_cols=["year", "month", "day"], compression="snappy")
+    files_written += 1
+
+    # Advance by number of rows * 1 minute
+    last_close = int(df["window_start"].max().timestamp() * 1000) + 60_000
+    current = max(current + len(rows) * 60_000, last_close)
+
+logger.info(f"Backfill complete for {symbol}, files_written={files_written}")
+```
+
+async def _run_backfill_async(config: Dict[str, Any], exchange_name: str, days: int, symbols: Optional[List[str]]) -> None:
+setup_logging("backfill", config)
+ex = get_exchange_config(config, exchange_name)
+base_url = ex["rest_url"]
+
+```
+if not symbols:
+    symbols = ex.get("symbols", [])
+
+end = datetime.now(timezone.utc)
+start = end - timedelta(days=days)
+start_ts_ms = int(start.timestamp() * 1000)
+end_ts_ms = int(end.timestamp() * 1000)
+
+async with aiohttp.ClientSession() as session:
+    tasks = []
+    for sym in symbols:
+        out_root = get_backfill_symbol_root(config, exchange_name, sym)
+        tasks.append(asyncio.create_task(_backfill_symbol(session, base_url, sym, start_ts_ms, end_ts_ms, out_root)))
+    await asyncio.gather(*tasks)
+```
+
+def run_backfill(config: Dict[str, Any], exchange_name: str = "binance", days: int = 90, symbols: Optional[List[str]] = None) -> None:
+asyncio.run(_run_backfill_async(config, exchange_name, days, symbols))
+
+# FILE: tools/scheduler.py
+
+# Summary: Windows Task Scheduler helper to register collector/transformer/compactor jobs using schtasks.
+
+import argparse
+import os
+import subprocess
+from typing import Any, Dict, Optional
+
+from tools.common import load_config
+
+def _python_exe() -> str:
+return os.path.join(os.path.dirname(os.sys.executable), "python.exe")
+
+def _schtasks(args: list[str]) -> None:
+subprocess.run(["schtasks"] + args, check=True)
+
+def schedule_collector_on_startup(config_path: str = "config.yml") -> None:
+py = _python_exe()
+cmd = f'"{py}" "{os.path.join(os.getcwd(), "main.py")}" --mode collector --config "{os.path.abspath(config_path)}"'
+_schtasks(["/Create", "/SC", "ONSTART", "/RL", "HIGHEST", "/TN", "CryptoDataLake_Collector", "/TR", cmd])
+
+def schedule_transformer_every_5min(config_path: str = "config.yml") -> None:
+py = _python_exe()
+cmd = f'"{py}" "{os.path.join(os.getcwd(), "main.py")}" --mode transformer --config "{os.path.abspath(config_path)}"'
+_schtasks(["/Create", "/SC", "MINUTE", "/MO", "5", "/TN", "CryptoDataLake_Transformer", "/TR", cmd])
+
+def schedule_compactor_nightly(config_path: str = "config.yml") -> None:
+py = _python_exe()
+cmd = f'"{py}" "{os.path.join(os.getcwd(), "main.py")}" --mode compact --config "{os.path.abspath(config_path)}"'
+_schtasks(["/Create", "/SC", "DAILY", "/ST", "01:30", "/TN", "CryptoDataLake_Compactor", "/TR", cmd])
+
+def remove_task(task_name: str) -> None:
+_schtasks(["/Delete", "/TN", task_name, "/F"])
+
+def main() -> None:
+parser = argparse.ArgumentParser(description="Scheduler helper for Crypto Data Lake (Windows).")
+parser.add_argument("--action", choices=["setup_all", "remove_all"], required=True)
+parser.add_argument("--config", default="config.yml")
+args = parser.parse_args()
+
+```
+if args.action == "setup_all":
+    schedule_collector_on_startup(args.config)
+    schedule_transformer_every_5min(args.config)
+    schedule_compactor_nightly(args.config)
+elif args.action == "remove_all":
+    for name in ["CryptoDataLake_Collector", "CryptoDataLake_Transformer", "CryptoDataLake_Compactor"]:
+        try:
+            remove_task(name)
+        except Exception:
+            pass
+```
+
+if **name** == "**main**":
+main()
+
+# FILE: sql/query_duckdb.sql
+
+-- Summary: Example DuckDB views to query Parquet 1-second bars and rollup to 1-minute windows.
+PRAGMA threads=4;
+
+-- Root of Parquet dataset (adjust if base_path changed):
+-- Reads all exchange/symbol partitions under default config base path.
+CREATE OR REPLACE VIEW bars_all_1s AS
+SELECT *
+FROM read_parquet('D:/CryptoDataLake/parquet/**');
+
+CREATE OR REPLACE VIEW bars_1m AS
+WITH src AS (
+SELECT
+symbol,
+window_start,
+open,
+high,
+low,
+close,
+volume_base,
+volume_quote
+FROM bars_all_1s
+)
+SELECT
+symbol,
+date_trunc('minute', window_start) AS ts,
+first(open)     AS open,
+max(high)       AS high,
+min(low)        AS low,
+last(close)     AS close,
+sum(volume_base)  AS volume_base,
+sum(volume_quote) AS volume_quote
+FROM src
+GROUP BY symbol, ts
+ORDER BY symbol, ts;
+
+CREATE OR REPLACE VIEW latest_price AS
+SELECT DISTINCT ON (symbol)
+symbol,
+window_start AS ts,
+close
+FROM bars_all_1s
+ORDER BY symbol, ts DESC;
+
+[PART 1 of 2]
+
+# FILE: tests/**init**.py
+
+# Summary: Test package init.
+
+# FILE: tests/test_collector.py
+
+# Summary: Unit tests for collector parsing and writer rotation; integration with transformer on mocked data.
+
+import json
+import os
+import time
+from datetime import datetime, timezone
+
+import duckdb
+import pandas as pd
+
+from collector.collector import parse_event, RotatingJSONLWriter
+from transformer.transformer import transform_symbol_day
+from tools.common import load_config, ensure_dir
+
+def test_parse_event_trade_and_quote():
+trade_msg = {
+"stream": "adausdt@trade",
+"data": {"e": "trade", "E": 1699999999000, "s": "ADAUSDT", "p": "0.2500", "q": "10", "m": False},
+}
+quote_msg = {
+"stream": "adausdt@bookTicker",
+"data": {"e": "bookTicker", "E": 1699999999500, "s": "ADAUSDT", "b": "0.2498", "a": "0.2502"},
+}
+
+```
+t = parse_event(trade_msg)
+q = parse_event(quote_msg)
+
+assert t["symbol"] == "ADAUSDT"
+assert t["stream"] == "trade"
+assert abs(t["price"] - 0.25) < 1e-9
+assert abs(t["qty"] - 10) < 1e-9
+assert t["side"] == "buy"
+
+assert q["symbol"] == "ADAUSDT"
+assert q["stream"] == "bookTicker"
+assert abs(q["bid"] - 0.2498) < 1e-9
+assert abs(q["ask"] - 0.2502) < 1e-9
+```
+
+def test_rotating_writer(tmp_path):
+base = tmp_path / "raw" / "binance"
+os.makedirs(base, exist_ok=True)
+w = RotatingJSONLWriter(base_dir=str(base), symbol="ADAUSDT", interval_sec=1)
+
+```
+# Write two lines across two seconds to trigger rotation
+now = time.time()
+w.write_obj({"a": 1}, now_epoch=now)
+w.write_obj({"a": 2}, now_epoch=now + 1.1)
+w.close()
+
+# Ensure two parts created
+date_str = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d")
+d = base / "ADAUSDT" / date_str
+files = list(sorted([f for f in os.listdir(d) if f.endswith(".jsonl")]))
+assert len(files) >= 2
+```
+
+def _write_mock_raw(tmp_base: str, exchange: str, symbol: str, date: str):
+"""Create a small raw dataset with trades and quotes spanning 3 seconds."""
+out_dir = os.path.join(tmp_base, "raw", exchange, symbol, date)
+os.makedirs(out_dir, exist_ok=True)
+path = os.path.join(out_dir, "part_001.jsonl")
+t0 = int(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+rows = [
+{"symbol": symbol, "ts_event": t0 + 0, "ts_recv": t0 + 1, "price": 100.0, "qty": 1.0, "side": "buy", "bid": None, "ask": None, "stream": "trade"},
+{"symbol": symbol, "ts_event": t0 + 500, "ts_recv": t0 + 501, "price": 101.0, "qty": 2.0, "side": "sell", "bid": None, "ask": None, "stream": "trade"},
+{"symbol": symbol, "ts_event": t0 + 900, "ts_recv": t0 + 901, "price": 102.0, "qty": 1.5, "side": "buy", "bid": None, "ask": None, "stream": "trade"},
+{"symbol": symbol, "ts_event": t0 + 1200, "ts_recv": t0 + 1201, "price": None, "qty": None, "side": None, "bid": 99.5, "ask": 100.5, "stream": "bookTicker"},
+{"symbol": symbol, "ts_event": t0 + 1500, "ts_recv": t0 + 1501, "price": 101.0, "qty": 0.5, "side": "sell", "bid": None, "ask": None, "stream": "trade"},
+{"symbol": symbol, "ts_event": t0 + 2200, "ts_recv": t0 + 2201, "price": None, "qty": None, "side": None, "bid": 99.0, "ask": 101.0, "stream": "bookTicker"},
+]
+with open(path, "w", encoding="utf-8") as f:
+for r in rows:
+f.write(json.dumps(r) + "\n")
+
+def test_transformer_integration(tmp_path):
+# Create temp config pointing to tmp_path
+cfg_path = tmp_path / "config.yml"
+cfg_text = f"""
+general:
+timezone: "UTC"
+log_level: "INFO"
+base_path: "{str(tmp_path).replace('\', '\\')}"
+exchanges:
+
+* name: "binance"
+  symbols: ["ADAUSDT"]
+  rest_url: "[https://api.binance.com/api/v3](https://api.binance.com/api/v3)"
+  wss_url: "wss://stream.binance.com:9443/ws"
+  collector:
+  write_interval_sec: 60
+  reconnect_backoff: 10
+  output_format: "jsonl"
+  transformer:
+  resample_interval_sec: 1
+  parquet_compression: "snappy"
+  """
+  cfg_path.write_text(cfg_text, encoding="utf-8")
+  config = load_config(str(cfg_path))
+
+  # Write mock raw
+
+  date = "2025-01-01"
+  _write_mock_raw(str(tmp_path), "binance", "ADAUSDT", date)
+
+  # Run transform
+
+  out_root = transform_symbol_day(config, "binance", "ADAUSDT", date, resample_interval_sec=1)
+  assert out_root is not None
+
+  # Read Parquet partitions with DuckDB
+
+  y, m, d = date.split("-")
+  pattern = os.path.join(out_root, f"year={int(y)}", f"month={int(m)}", f"day={int(d)}", "*.parquet")
+  con = duckdb.connect()
+  try:
+  df = con.execute(f"SELECT * FROM read_parquet('{pattern.replace('\', '\\')}') ORDER BY window_start").fetch_df()
+  finally:
+  con.close()
+
+  # Expect rows covering from t0 to last event second (>= 3 seconds)
+
+  assert not df.empty
+
+  # Check OHLC on first second
+
+  first_row = df.iloc[0]
+  assert abs(first_row["open"] - 100.0) < 1e-9
+  assert abs(first_row["high"] - 102.0) < 1e-9
+  assert abs(first_row["low"] - 100.0) < 1e-9
+  assert abs(first_row["close"] - 102.0) < 1e-9
+
+  # Volumes
+
+  assert first_row["volume_base"] > 0
+  assert first_row["volume_quote"] > 0
+
+# FILE: tests/test_transformer.py
+
+# Summary: Tests for 1-second bar resampling correctness and DuckDB 1-minute rollup.
+
+import os
+from datetime import datetime, timezone
+
+import duckdb
+import pandas as pd
+
+from transformer.transformer import _aggregate_bars_1s
+
+def test_aggregate_bars_1s_basic():
+# Construct a small trade+quote dataframe
+t0 = int(datetime(2025, 5, 5, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+rows = [
+{"symbol": "SUIUSDT", "ts_event": t0 + 0, "price": 1.0, "qty": 1.0, "stream": "trade"},
+{"symbol": "SUIUSDT", "ts_event": t0 + 500, "price": 1.2, "qty": 2.0, "stream": "trade"},
+{"symbol": "SUIUSDT", "ts_event": t0 + 900, "price": 1.1, "qty": 1.0, "stream": "trade"},
+{"symbol": "SUIUSDT", "ts_event": t0 + 1200, "bid": 1.05, "ask": 1.15, "stream": "bookTicker"},
+]
+df = pd.DataFrame(rows)
+out = _aggregate_bars_1s(df, "SUIUSDT", second=1)
+assert not out.empty
+r0 = out.iloc[0]
+assert abs(r0["open"] - 1.0) < 1e-9
+assert abs(r0["high"] - 1.2) < 1e-9
+assert abs(r0["low"] - 1.0) < 1e-9
+assert abs(r0["close"] - 1.1) < 1e-9
+# Check vwap within range
+assert r0["vwap"] >= r0["low"] and r0["vwap"] <= r0["high"]
+# Quotes propagated
+assert "bid" in out.columns and "ask" in out.columns
+
+[BUILD COMPLETE]

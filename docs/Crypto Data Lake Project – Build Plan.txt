@@ -1,0 +1,209 @@
+## Crypto Data Lake Project – Detailed Build Plan
+
+### ⚓ Core Principles
+
+1. **Simplicity First** — minimal dependencies, clear responsibility per module.
+2. **Local-first design** — runs fully on Windows without cloud reliance.
+3. **Recoverability** — survives internet drops; data preserved and resumable.
+4. **Transparency** — readable logs, simple folder structure, no hidden state.
+5. **Extensibility** — easy to expand with new data or modules later.
+
+---
+
+### 🧠 Architecture Summary
+
+Data flow: **Exchange → Collector → Transformer → Parquet Storage → DuckDB → Analysis.**
+
+```
+Binance API  --->  Collector.py  --->  Transformer.py  --->  Parquet Data
+                                               │
+                                               ▼
+                                         DuckDB Queries
+```
+
+---
+
+### 🧬 Module Breakdown
+
+#### 1. Configuration System (`config.yml`)
+
+Contains all runtime parameters for easy editing.
+
+```yaml
+general:
+  timezone: UTC
+  log_level: INFO
+  base_path: "D:/CryptoDataLake"
+
+exchanges:
+  - name: binance
+    symbols: [SOLUSDT, SUIUSDT, ADAUSDT]
+    rest_url: "https://api.binance.com/api/v3"
+    wss_url: "wss://stream.binance.com:9443/ws"
+
+collector:
+  write_interval_sec: 60
+  reconnect_backoff: 10
+  output_format: "jsonl"
+
+transformer:
+  resample_interval_sec: 1
+  parquet_compression: "snappy"
+```
+
+---
+
+#### 2. Collector (`collector/collector.py`)
+
+**Purpose:** Connect to Binance WebSocket, record trades & top-of-book quotes.
+
+**Key Features:**
+
+* WebSocket for trades (`@trade`) and quotes (`@bookTicker`).
+* Auto-reconnect with exponential backoff.
+* Writes raw JSONL files in 60-second rotations.
+* Logs latency between exchange event and local receipt.
+
+**Output Example:**
+`D:/CryptoDataLake/raw/binance/SOLUSDT/2025-10-20/part_001.jsonl`
+
+Each line includes: `ts_event`, `ts_recv`, `price`, `qty`, `side`, `bid`, `ask`, `stream`.
+
+---
+
+#### 3. Transformer (`transformer/transformer.py`)
+
+**Purpose:** Convert raw JSONL files into 1-second OHLCV bars + L1 quote snapshots.
+
+**Operations:**
+
+1. Load raw trades and quotes.
+2. Group by symbol and second.
+3. Calculate open, high, low, close, base/quote volume, VWAP, and spread.
+4. Fill gaps with previous close and zero volume.
+5. Write Parquet files partitioned by date and symbol.
+
+**Output Example:**
+`D:/CryptoDataLake/parquet/binance/SOLUSDT/year=2025/month=10/day=20/part-0001.parquet`
+
+---
+
+#### 4. Storage Manager (`storage/compactor.py`)
+
+**Purpose:** Merge small Parquet chunks into daily files.
+
+* Merges per-symbol, per-day.
+* Validates timestamp continuity and removes duplicates.
+* Logs schema and hash for each file.
+
+Output:
+`D:/CryptoDataLake/parquet/binance/SOLUSDT/2025-10-20.parquet`
+
+---
+
+#### 5. Query & Analysis (`sql/query_duckdb.sql`)
+
+Predefined SQL views for quick analytics.
+
+```sql
+CREATE VIEW bars_1m AS
+SELECT symbol,
+       window_start AS ts,
+       first(open) AS open,
+       max(high) AS high,
+       min(low) AS low,
+       last(close) AS close,
+       sum(volume_base) AS volume_base,
+       sum(volume_quote) AS volume_quote
+FROM read_parquet('D:/CryptoDataLake/parquet/**')
+GROUP BY symbol, window_start
+ORDER BY ts;
+```
+
+---
+
+#### 6. Validation & Monitoring (`tools/validator.py`)
+
+**Checks:**
+
+* Missing timestamps or duplicates.
+* Schema integrity.
+* Stream downtime.
+
+Outputs reports in `/logs/validation/`.
+
+---
+
+#### 7. Backfill (`tools/backfill.py`)
+
+**Purpose:** Pull 90 days of historical 1-minute candles from Binance REST API.
+
+* Converts to same schema as live bars.
+* Stores under `backfill/binance/`.
+
+---
+
+#### 8. Logging System
+
+Library: `loguru`
+
+```
+logs/
+ ├── collector.log
+ ├── transformer.log
+ └── validation.log
+```
+
+Rotates daily, retains 14 days.
+
+---
+
+#### 9. Scheduler (`tools/scheduler.py`)
+
+Windows Task Scheduler setup:
+
+* Run collector on startup.
+* Transformer every 5 minutes.
+* Compactor nightly.
+
+---
+
+### 🔎 Testing Plan (for Claude Code)
+
+**Unit Tests:**
+
+* Collector reconnect & message parsing.
+* Transformer resampling accuracy.
+
+**Integration Tests:**
+
+* Run collector 2 minutes, transform, and verify output via DuckDB.
+
+**Validation Tests:**
+
+* Compare generated 1m candles vs Binance API reference.
+
+---
+
+### 🛠️ Build Parameters for GPT-5-Pro
+
+When generating code:
+
+* Python 3.11
+* Dependencies: `aiohttp`, `websockets`, `duckdb`, `pandas`, `pyarrow`, `loguru`, `yaml`
+* CLI entrypoint: `python main.py --mode collector|transformer|validate|compact`
+* Config-driven paths, no hardcoding.
+* Modular, type-hinted, and documented functions.
+
+---
+
+### 🖐️ MVP Success Criteria
+
+1. Live trade + quote data collected for SOL/SUI/ADA.
+2. 1-second OHLCV Parquet files produced reliably.
+3. Historical 90-day data backfilled.
+4. Data verified via DuckDB queries for consistency.
+
+---
+
+This plan represents **version 1.0 of the Crypto Data Lake build spec**, ready for direct use by GPT-5-Pro to generate the complete, modular Python codebase.

@@ -1,0 +1,19 @@
+general:
+  timezone: "UTC"
+  log_level: "INFO"
+  base_path: "D:/CryptoDataLake"
+
+exchanges:
+  - name: "binance"
+    symbols: ["SOLUSDT", "SUIUSDT", "ADAUSDT"]
+    rest_url: "https://api.binance.com/api/v3"
+    wss_url: "wss://stream.binance.com:9443/ws"
+
+collector:
+  write_interval_sec: 60
+  reconnect_backoff: 10
+  output_format: "jsonl"
+
+transformer:
+  resample_interval_sec: 1
+  parquet_compression: "snappy"
