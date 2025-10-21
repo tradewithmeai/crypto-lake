@@ -39,7 +39,7 @@ A production-ready, local-first cryptocurrency market data pipeline for Windows 
 ```bash
 python -m venv venv
 venv\Scripts\activate
-pip install aiohttp websockets duckdb pandas pyarrow loguru pyyaml pytest
+pip install aiohttp websockets duckdb pandas pyarrow loguru pyyaml pytest streamlit plotly
 ```
 
 ### 2. Configure
@@ -143,6 +143,29 @@ This creates Windows Task Scheduler jobs:
 - **Collector**: Runs on system startup
 - **Transformer**: Runs every 5 minutes
 - **Compactor**: Runs daily at 1:30 AM
+
+## Test GUI (Streamlit)
+
+Launch the interactive dashboard for data visualization and quality monitoring:
+
+```bash
+streamlit run gui/app.py
+```
+
+**Features:**
+- **Real-time Candlestick Charts**: View OHLC data across multiple timeframes (1s, 1m, 5m, 15m, 1h)
+- **Volume Analysis**: Secondary volume bars color-coded by price direction
+- **Spread Visualization**: Track bid-ask spread over time
+- **Data Quality Metrics**: Monitor gaps, completeness, and continuity
+- **Auto-Refresh**: Enable overnight monitoring with configurable intervals (15s - 5m)
+- **Export**: Download filtered data as CSV
+
+**Access:** http://localhost:8501 after launch
+
+**Tips:**
+- Use auto-refresh with 60s interval for overnight monitoring
+- All timestamps displayed in UTC
+- Efficiently queries large datasets using DuckDB with time-based filtering
 
 ## DuckDB Queries
 

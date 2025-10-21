@@ -44,7 +44,11 @@
       "Bash(\"venv/Scripts/python.exe\" main.py --mode transformer --date 2025-10-21)",
       "Bash(\"venv/Scripts/python.exe\" main.py --mode validate --date 2025-10-21)",
       "Bash(\"venv/Scripts/python.exe\" main.py --mode compact --date 2025-10-21)",
-      "Bash(cat \"D:/CryptoDataLake/parquet/binance/SOLUSDT/2025-10-21.meta.json\")"
+      "Bash(cat \"D:/CryptoDataLake/parquet/binance/SOLUSDT/2025-10-21.meta.json\")",
+      "Bash(git commit -m \"Implement audit improvements for production readiness\n\n- Add trade_id capture from Binance for dedupe and auditability\n- Make OHLC deterministic by sorting trades/quotes chronologically\n- Add latency tracking with p50/p95/max stats logged every 60s\n- Add explicit no-trade gap test for quotes-only periods\n- Record UTC context in compaction with JSON metadata sidecar\n- Add convenience DuckDB views for 1m/5m/1h/daily rollups\n- All tests passing (5/5 including new quote-only gap test)\n- Verified with live 30-second collection test\")",
+      "Bash(git push origin main)",
+      "Bash(\"venv/Scripts/python.exe\" -m pip install streamlit plotly)",
+      "Bash(\"venv/Scripts/python.exe\" -m streamlit run gui/app.py --server.headless true --server.port 8501)"
     ],
     "deny": [],
     "ask": []
