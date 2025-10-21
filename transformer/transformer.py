@@ -111,6 +111,14 @@ def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.Dat
 
     # Finalize schema
     out = bars_df.reset_index().rename(columns={"index": "window_start"})
+
+    # --- NEW: Ensure timestamps are normalised to UTC ---
+    if out["window_start"].dt.tz is not None:
+        out["window_start"] = out["window_start"].dt.tz_convert("UTC")
+    else:
+        out["window_start"] = out["window_start"].dt.tz_localize("UTC")
+    # ----------------------------------------------------
+
     out["symbol"] = symbol
     # Ensure types
     numerics = ["open", "high", "low", "close", "volume_base", "volume_quote", "trade_count", "vwap", "bid", "ask", "spread"]
