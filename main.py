@@ -10,12 +10,13 @@ from collector.collector import run_collector
 from transformer.transformer import run_transformer
 from tools.validator import run_validator
 from storage.compactor import run_compactor
+from tools.macro_minute import run_macro_minute
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crypto Data Lake")
     parser.add_argument(
         "--mode",
-        choices=["collector", "transformer", "validate", "compact"],
+        choices=["collector", "transformer", "validate", "compact", "macro_minute"],
         required=True,
         help="Pipeline mode to run.",
     )
@@ -42,6 +43,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="config.yml",
         help="Path to config.yml (default: ./config.yml).",
+    )
+    parser.add_argument(
+        "--tickers",
+        type=str,
+        default=None,
+        help="Comma-separated list of macro tickers for macro_minute mode (e.g., SPY,UUP,ES=F).",
+    )
+    parser.add_argument(
+        "--lookback_days",
+        type=int,
+        default=7,
+        help="Number of days to look back for macro_minute mode (max 7).",
     )
     return parser.parse_args()
 
@@ -73,6 +86,14 @@ def main() -> None:
 
     if args.mode == "compact":
         run_compactor(config, exchange_name=args.exchange, date=args.date, symbols=symbols_override)
+        return
+
+    if args.mode == "macro_minute":
+        if not args.tickers:
+            logger.error("--tickers is required for macro_minute mode")
+            sys.exit(1)
+        tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+        run_macro_minute(config, tickers=tickers, lookback_days=args.lookback_days)
         return
 
 if __name__ == "__main__":

@@ -124,3 +124,19 @@ SELECT
 FROM bars_all_1s
 GROUP BY symbol, CAST(window_start AS DATE)
 ORDER BY symbol, date;
+
+-- ========================================
+-- Macro 1-minute data (SPY, UUP, ES=F, etc.)
+-- ========================================
+CREATE OR REPLACE VIEW macro_minute AS
+SELECT
+    ticker,
+    ts,
+    open,
+    high,
+    low,
+    close,
+    volume
+FROM read_parquet('D:/CryptoDataLake/macro/minute/**/*.parquet')
+WHERE ts IS NOT NULL
+ORDER BY ticker, ts;
