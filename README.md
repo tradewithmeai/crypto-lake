@@ -167,6 +167,127 @@ streamlit run gui/app.py
 - All timestamps displayed in UTC
 - Efficiently queries large datasets using DuckDB with time-based filtering
 
+## Analysis-Ready Layer
+
+The crypto-lake includes an analysis-ready layer with research views, data slicing tools, and comprehensive validation:
+
+### Research Views (DuckDB)
+
+Pre-built views make analysis "one SELECT away". All views use `window_start` as the timestamp field (UTC timezone-aware).
+
+**Available Views:**
+1. **bars_1s** - Base 1-second bars from collector (with exchange literal)
+2. **bars_1m** - 1-minute rollup from 1s bars
+3. **klines_1m** - Official Binance 1m klines (if available)
+4. **compare_our_vs_kline_1m** - Comparison view for data quality checks
+5. **funding_oi_hourly** - Funding rates and open interest (if derivatives data exists)
+6. **macro_minute** - 1-minute macro data (SPY, UUP, ES=F, etc.)
+7. **dxy_synthetic_minute** - DXY synthetic index (if available)
+
+**Location:** `sql/views.sql` (uses `@@BASE@@` placeholder for base path)
+
+**Note:** The views use a `@@BASE@@` placeholder that is replaced at runtime with the actual `base_path` from `config.yml`. This allows the SQL views to be portable across different installations.
+
+### Data Slice Tool
+
+Export timeboxed datasets for analysis in Parquet or CSV format:
+
+```bash
+# Export 1-minute bars for specific symbols and time range
+python main.py --mode slice \
+    --symbols SOLUSDT,SUIUSDT \
+    --start 2025-10-21T00:00:00Z \
+    --end 2025-10-21T23:59:00Z \
+    --tf 1m \
+    --source bars \
+    --out data/extracts/sol_1m_2025-10-21.parquet \
+    --format parquet
+
+# Export to CSV instead
+python main.py --mode slice \
+    --symbols SOLUSDT \
+    --start 2025-10-21T00:00:00Z \
+    --end 2025-10-21T01:00:00Z \
+    --tf 1s \
+    --source bars \
+    --out data/extracts/sol_1s_sample.csv \
+    --format csv
+```
+
+**Parameters:**
+- `--symbols`: Comma-separated list of symbols (e.g., SOLUSDT,SUIUSDT)
+- `--start` / `--end`: Time range in ISO format with Z suffix
+- `--tf`: Timeframe (1s or 1m)
+- `--source`: Data source (bars or klines)
+- `--out`: Output file path
+- `--format`: Output format (parquet or csv)
+
+### Data Quality Validation
+
+Run comprehensive data quality checks and generate Markdown reports:
+
+```bash
+# Run validation rulepack
+python main.py --mode validate_rules \
+    --symbols SOLUSDT,SUIUSDT,ADAUSDT \
+    --start 2025-10-21T00:00:00Z \
+    --end 2025-10-21T14:40:00Z \
+    --tf 1s \
+    --source bars \
+    --report reports/sanity_2025-10-21.md
+```
+
+**Validation Rules:**
+- **R1**: OHLC ordering (low ≤ open,close ≤ high)
+- **R2**: Non-negative prices (OHLC > 0)
+- **R3**: Ask ≥ Bid (bars only, ignores NaN)
+- **R4**: No NaNs in OHLC (allows NaN in bid/ask/spread)
+- **R5**: Timestamp continuity and UTC minute alignment
+- **R6**: Spread sanity (spread ≥ 0, < 5% mid for >99.9% of rows)
+- **R7**: Parity check with official klines (optional, if available)
+
+**Report Output:**
+- Summary table with violation counts per rule
+- Top 25 offending rows per rule
+- Overall assessment: PASS / INVESTIGATE / FAIL
+- Detailed statistics (spread outliers, volume differences, etc.)
+
+**Example Report Structure:**
+```markdown
+# Data Quality Validation Report
+
+## Run Metadata
+- Symbols: SOLUSDT, SUIUSDT, ADAUSDT
+- Time Range: 2025-10-21T00:00:00Z to 2025-10-21T14:40:00Z
+- Timeframe: 1s
+- Total Rows Checked: 157,680
+
+## Validation Summary
+| Rule | Description | Total Checked | Violations | % Violated |
+|------|-------------|---------------|------------|------------|
+| R1   | OHLC ordering | 157,680 | 0 | 0.00% |
+| R2   | Positive prices | 157,680 | 0 | 0.00% |
+...
+
+## Overall Assessment
+✅ PASS - All validation rules passed successfully.
+```
+
+## Macro Data Collection
+
+Collect 1-minute macro data (stocks, ETFs, futures) using yfinance:
+
+```bash
+# Fetch SPY and UUP data for last 7 days
+python main.py --mode macro_minute \
+    --tickers SPY,UUP,ES=F \
+    --lookback_days 7
+```
+
+**Storage:** `D:/CryptoDataLake/macro/minute/{ticker}/year=2025/month=10/day=21/`
+
+**Schema:** ticker, ts, open, high, low, close, volume (all UTC timezone-aware)
+
 ## DuckDB Queries
 
 Load and analyze data:
