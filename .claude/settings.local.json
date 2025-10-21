@@ -36,7 +36,15 @@
       "Bash(git --version)",
       "Bash(gh --version)",
       "Bash(git init)",
-      "Bash(git add .)"
+      "Bash(git add .)",
+      "Bash(git commit -m \"Initial commit: Crypto Data Lake pipeline\n\n- Real-time data collection from Binance WebSocket\n- 1-second OHLCV bar generation with L1 quotes\n- Parquet storage with partitioning and compaction\n- Data validation and quality checks\n- Comprehensive test coverage (4/4 passing)\n- Production-ready Windows deployment\")",
+      "Bash(gh repo create crypto-lake --public --source=. --description=\"Production-ready cryptocurrency market data pipeline for real-time collection, transformation, and storage of Binance trading data\" --push)",
+      "Read(//d/CryptoDataLake/logs/**)",
+      "Bash(python -m json.tool)",
+      "Bash(\"venv/Scripts/python.exe\" main.py --mode transformer --date 2025-10-21)",
+      "Bash(\"venv/Scripts/python.exe\" main.py --mode validate --date 2025-10-21)",
+      "Bash(\"venv/Scripts/python.exe\" main.py --mode compact --date 2025-10-21)",
+      "Bash(cat \"D:/CryptoDataLake/parquet/binance/SOLUSDT/2025-10-21.meta.json\")"
     ],
     "deny": [],
     "ask": []

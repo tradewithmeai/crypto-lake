@@ -30,7 +30,7 @@ def _load_jsonl_files(file_paths: List[str]) -> pd.DataFrame:
         except Exception as e:
             logger.error(f"Failed to read {fp}: {e}")
     if not frames:
-        return pd.DataFrame(columns=["symbol", "ts_event", "ts_recv", "price", "qty", "side", "bid", "ask", "stream"])
+        return pd.DataFrame(columns=["symbol", "ts_event", "ts_recv", "price", "qty", "side", "bid", "ask", "stream", "trade_id"])
     return pd.concat(frames, ignore_index=True)
 
 def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.DataFrame:
@@ -45,6 +45,12 @@ def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.Dat
     # Trade-based OHLCV
     trades = df[df["stream"] == "trade"].copy()
     quotes = df[df["stream"] == "bookTicker"].copy()
+
+    # Sort by timestamp for deterministic first/last aggregation
+    if not trades.empty:
+        trades = trades.sort_values("ts")
+    if not quotes.empty:
+        quotes = quotes.sort_values("ts")
 
     bars = []
     if not trades.empty:
@@ -74,7 +80,8 @@ def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.Dat
     if not quotes.empty:
         quotes["bid"] = pd.to_numeric(quotes["bid"])
         quotes["ask"] = pd.to_numeric(quotes["ask"])
-        q_agg = quotes.sort_values("ts").groupby("sec").agg(bid=("bid", "last"), ask=("ask", "last"))
+        # Already sorted above for determinism
+        q_agg = quotes.groupby("sec").agg(bid=("bid", "last"), ask=("ask", "last"))
         bars_df = bars_df.join(q_agg, how="outer")
 
     # Spread

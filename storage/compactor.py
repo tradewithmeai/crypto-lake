@@ -92,7 +92,8 @@ def run_compactor(config: Dict[str, Any], exchange_name: str = "binance", date: 
             # Validate
             v = _validate_continuity(df)
             h = _hash_dataframe(df)
-            logger.info(f"Compactor {sym} {date}: missing={v['missing']} duplicates={v['duplicates']} sha256={h}")
+            num_rows = len(df)
+            logger.info(f"Compactor {sym} {date}: timezone=UTC, rows={num_rows}, missing={v['missing']}, duplicates={v['duplicates']}, sha256={h}")
 
             # Write daily file
             daily_name = f"{date}.parquet"
@@ -101,5 +102,22 @@ def run_compactor(config: Dict[str, Any], exchange_name: str = "binance", date: 
             table = pa.Table.from_pandas(df.drop(columns=["year", "month", "day"], errors="ignore"), preserve_index=False)
             pq.write_table(table, out_path, compression="snappy")
             logger.info(f"Wrote compacted daily file: {out_path}")
+
+            # Write metadata sidecar
+            import json
+            meta = {
+                "timezone": "UTC",
+                "date": date,
+                "symbol": sym,
+                "exchange": exchange_name,
+                "rows": num_rows,
+                "missing_seconds": v["missing"],
+                "duplicates": v["duplicates"],
+                "sha256": h,
+            }
+            meta_path = os.path.join(symbol_root, f"{date}.meta.json")
+            with open(meta_path, "w", encoding="utf-8") as mf:
+                json.dump(meta, mf, indent=2)
+            logger.info(f"Wrote metadata sidecar: {meta_path}")
         except Exception as e:
             logger.exception(f"Compactor failed for {sym} {date}: {e}")

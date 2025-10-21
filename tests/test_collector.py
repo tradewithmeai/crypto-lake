@@ -13,7 +13,7 @@ from tools.common import load_config, ensure_dir
 def test_parse_event_trade_and_quote():
     trade_msg = {
         "stream": "adausdt@trade",
-        "data": {"e": "trade", "E": 1699999999000, "s": "ADAUSDT", "p": "0.2500", "q": "10", "m": False},
+        "data": {"e": "trade", "E": 1699999999000, "s": "ADAUSDT", "p": "0.2500", "q": "10", "t": 12345678, "m": False},
     }
     quote_msg = {
         "stream": "adausdt@bookTicker",
@@ -28,11 +28,13 @@ def test_parse_event_trade_and_quote():
     assert abs(t["price"] - 0.25) < 1e-9
     assert abs(t["qty"] - 10) < 1e-9
     assert t["side"] == "buy"
+    assert t["trade_id"] == 12345678
 
     assert q["symbol"] == "ADAUSDT"
     assert q["stream"] == "bookTicker"
     assert abs(q["bid"] - 0.2498) < 1e-9
     assert abs(q["ask"] - 0.2502) < 1e-9
+    assert q["trade_id"] is None  # Quotes don't have trade_id
 
 def test_rotating_writer(tmp_path):
     base = tmp_path / "raw" / "binance"
@@ -58,12 +60,12 @@ def _write_mock_raw(tmp_base: str, exchange: str, symbol: str, date: str):
     path = os.path.join(out_dir, "part_001.jsonl")
     t0 = int(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
     rows = [
-        {"symbol": symbol, "ts_event": t0 + 0, "ts_recv": t0 + 1, "price": 100.0, "qty": 1.0, "side": "buy", "bid": None, "ask": None, "stream": "trade"},
-        {"symbol": symbol, "ts_event": t0 + 500, "ts_recv": t0 + 501, "price": 101.0, "qty": 2.0, "side": "sell", "bid": None, "ask": None, "stream": "trade"},
-        {"symbol": symbol, "ts_event": t0 + 900, "ts_recv": t0 + 901, "price": 102.0, "qty": 1.5, "side": "buy", "bid": None, "ask": None, "stream": "trade"},
-        {"symbol": symbol, "ts_event": t0 + 1200, "ts_recv": t0 + 1201, "price": None, "qty": None, "side": None, "bid": 99.5, "ask": 100.5, "stream": "bookTicker"},
-        {"symbol": symbol, "ts_event": t0 + 1500, "ts_recv": t0 + 1501, "price": 101.0, "qty": 0.5, "side": "sell", "bid": None, "ask": None, "stream": "trade"},
-        {"symbol": symbol, "ts_event": t0 + 2200, "ts_recv": t0 + 2201, "price": None, "qty": None, "side": None, "bid": 99.0, "ask": 101.0, "stream": "bookTicker"},
+        {"symbol": symbol, "ts_event": t0 + 0, "ts_recv": t0 + 1, "price": 100.0, "qty": 1.0, "side": "buy", "bid": None, "ask": None, "stream": "trade", "trade_id": 1001},
+        {"symbol": symbol, "ts_event": t0 + 500, "ts_recv": t0 + 501, "price": 101.0, "qty": 2.0, "side": "sell", "bid": None, "ask": None, "stream": "trade", "trade_id": 1002},
+        {"symbol": symbol, "ts_event": t0 + 900, "ts_recv": t0 + 901, "price": 102.0, "qty": 1.5, "side": "buy", "bid": None, "ask": None, "stream": "trade", "trade_id": 1003},
+        {"symbol": symbol, "ts_event": t0 + 1200, "ts_recv": t0 + 1201, "price": None, "qty": None, "side": None, "bid": 99.5, "ask": 100.5, "stream": "bookTicker", "trade_id": None},
+        {"symbol": symbol, "ts_event": t0 + 1500, "ts_recv": t0 + 1501, "price": 101.0, "qty": 0.5, "side": "sell", "bid": None, "ask": None, "stream": "trade", "trade_id": 1004},
+        {"symbol": symbol, "ts_event": t0 + 2200, "ts_recv": t0 + 2201, "price": None, "qty": None, "side": None, "bid": 99.0, "ask": 101.0, "stream": "bookTicker", "trade_id": None},
     ]
     with open(path, "w", encoding="utf-8") as f:
         for r in rows:
