@@ -18,6 +18,12 @@ def test_aggregate_bars_1s_basic():
     df = pd.DataFrame(rows)
     out = _aggregate_bars_1s(df, "SUIUSDT", second=1)
     assert not out.empty
+
+    # Verify window_start field exists and is timezone-aware UTC
+    assert "window_start" in out.columns, "Output must have 'window_start' column"
+    assert out["window_start"].dt.tz is not None, "window_start must be timezone-aware"
+    assert str(out["window_start"].dt.tz) == "UTC", "window_start must be in UTC timezone"
+
     r0 = out.iloc[0]
     assert abs(r0["open"] - 1.0) < 1e-9
     assert abs(r0["high"] - 1.2) < 1e-9
@@ -50,6 +56,11 @@ def test_quotes_only_no_trade_gaps():
 
     df = pd.DataFrame(rows)
     out = _aggregate_bars_1s(df, "BTCUSDT", second=1)
+
+    # Verify window_start field exists and is timezone-aware UTC
+    assert "window_start" in out.columns, "Output must have 'window_start' column"
+    assert out["window_start"].dt.tz is not None, "window_start must be timezone-aware"
+    assert str(out["window_start"].dt.tz) == "UTC", "window_start must be in UTC timezone"
 
     # Should have 4 rows (seconds 0-3)
     assert len(out) == 4

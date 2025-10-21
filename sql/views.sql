@@ -95,7 +95,7 @@ ORDER BY symbol, window_start;
 CREATE OR REPLACE VIEW latest_price AS
 SELECT DISTINCT ON (symbol)
     symbol,
-    window_start AS ts,
+    window_start,
     close,
     bid,
     ask,

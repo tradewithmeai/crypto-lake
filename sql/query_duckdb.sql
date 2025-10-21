@@ -22,7 +22,7 @@ WITH src AS (
 )
 SELECT
     symbol,
-    date_trunc('minute', window_start) AS ts,
+    date_trunc('minute', window_start) AS window_start,
     first(open)     AS open,
     max(high)       AS high,
     min(low)        AS low,
@@ -30,13 +30,13 @@ SELECT
     sum(volume_base)  AS volume_base,
     sum(volume_quote) AS volume_quote
 FROM src
-GROUP BY symbol, ts
-ORDER BY symbol, ts;
+GROUP BY symbol, window_start
+ORDER BY symbol, window_start;
 
 CREATE OR REPLACE VIEW latest_price AS
 SELECT DISTINCT ON (symbol)
     symbol,
-    window_start AS ts,
+    window_start,
     close
 FROM bars_all_1s
-ORDER BY symbol, ts DESC;
+ORDER BY symbol, window_start DESC;
