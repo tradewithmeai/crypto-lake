@@ -22,11 +22,6 @@ exchanges:
       - DOTUSDT
       # FX Majors
       - EURUSDT
-      - GBPUSDT
-      - JPYUSDT
-      - AUDUSDT
-      - CADUSDT
-      - CHFUSDT
     rest_url: "https://api.binance.com/api/v3"
     wss_url: "wss://stream.binance.com:9443/ws"
 
@@ -55,3 +50,13 @@ macro_minute:
   schedule_minutes: 15            # Fetch macro data every 15 minutes
   startup_backfill_days: 7        # One-time backfill on startup (max 7 days for yfinance 1m data)
   runtime_lookback_days: 1        # Fetch last 1 day on each scheduled run
+
+testing:
+  # Testing mode for rapid validation (minutes instead of hours)
+  enabled: false                  # Can be overridden by CLI flags --mode test or --testing
+  transform_interval_min: 2       # Transform every 2 minutes (vs 60 in production)
+  macro_interval_min: 1           # Fetch macro data every 1 minute (vs 15 in production)
+  macro_lookback_startup_days: 1  # Backfill 1 day on startup (vs 7 in production)
+  macro_runtime_lookback_days: 1  # Fetch 1 day on each run (same as production)
+  backfill_days: 3                # Backfill 3 days for testing (vs 180 in production)
+  base_path: "D:/CryptoDataLake/test"  # Isolated test directory

@@ -9,9 +9,42 @@ def load_config(path: str = "config.yml") -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def setup_logging(app_name: str, config: Dict[str, Any]) -> None:
+def is_test_mode(config: Dict[str, Any], args: Optional[Any] = None) -> bool:
+    """
+    Determine if system is running in test mode.
+
+    Args:
+        config: Configuration dictionary
+        args: Parsed command-line arguments (optional)
+
+    Returns:
+        True if test mode is active
+    """
+    if args:
+        if hasattr(args, 'mode') and args.mode == "test":
+            return True
+        if hasattr(args, 'testing') and args.testing:
+            return True
+
+    return config.get("testing", {}).get("enabled", False)
+
+def setup_logging(app_name: str, config: Dict[str, Any], test_mode: bool = False) -> None:
+    """
+    Set up logging with rotation.
+
+    Args:
+        app_name: Name of the application/module
+        config: Configuration dictionary
+        test_mode: If True, logs go to test subdirectory
+    """
     base = config["general"]["base_path"]
-    logs_dir = os.path.join(base, "logs")
+
+    # Use test logs subdirectory in test mode
+    if test_mode:
+        logs_dir = os.path.join(base, "logs", "test")
+    else:
+        logs_dir = os.path.join(base, "logs")
+
     os.makedirs(logs_dir, exist_ok=True)
     level = str(config["general"].get("log_level", "INFO")).upper()
     log_path = os.path.join(logs_dir, f"{app_name}.log")

@@ -264,6 +264,127 @@ Press `Ctrl+C` to gracefully stop the orchestrator. All threads will shut down c
 - Health metrics update every 60 seconds (configurable in code)
 - All timestamps are UTC timezone-aware
 
+## Testing Mode
+
+Testing mode allows you to validate the entire Crypto Lake system in **minutes instead of hours** by compressing time-based intervals while maintaining all production logic, data integrity checks, and warnings.
+
+### When to Use Testing Mode
+
+- 🔍 Validate end-to-end pipeline after code changes
+- 🚀 Quick smoke test before production deployment
+- 🧪 Development and debugging with accelerated cycles
+- 📊 Verify all components work together correctly
+
+### How Testing Mode Works
+
+Testing mode applies **time compression** to scheduled operations:
+
+| Operation | Production | Testing | Speedup |
+|-----------|-----------|---------|---------|
+| Transform Interval | 60 min | 2 min | 30x faster |
+| Macro Fetch Interval | 15 min | 1 min | 15x faster |
+| Macro Startup Backfill | 7 days | 1 day | 7x less data |
+| Backfill Lookback | 180 days | 3 days | 60x less data |
+
+**What Stays the Same:**
+- ✅ All business logic and data processing
+- ✅ All validation rules and integrity checks
+- ✅ All warnings and error handling
+- ✅ Full 19-symbol collection (no shortcuts)
+- ✅ Real-time WebSocket streaming
+- ✅ Parquet schema and partitioning
+
+**What Changes:**
+- 📁 Output directory: `D:/CryptoDataLake/test/` (isolated)
+- 📝 Log files: `D:/CryptoDataLake/test/logs/test/` (isolated)
+- ⏱️ Intervals compressed for speed
+- 🏷️ All health reports labeled "MODE: TEST"
+- ⚡ Forced initial transform after 2-minute warmup
+
+### Running in Testing Mode
+
+**Method 1: Shorthand flag**
+```bash
+python main.py --mode test
+```
+
+**Method 2: Orchestrate with testing flag**
+```bash
+python main.py --mode orchestrate --testing
+```
+
+**Method 3: Enable in config.yml**
+```yaml
+testing:
+  enabled: true  # Activates testing mode globally
+```
+
+### Test Workflow Example
+
+A typical 5-minute test run validates:
+1. **Startup** (0:00-0:30): Orchestrator initializes, starts WebSocket collector
+2. **Macro Backfill** (0:30-1:00): One-time 1-day macro data fetch
+3. **Forced Transform** (2:00): Guaranteed transform cycle runs
+4. **Scheduled Transform** (4:00): Second transform cycle completes
+5. **Macro Fetch** (3:00): Scheduled macro data fetch
+6. **Shutdown** (5:00): User presses Ctrl+C, test summary prints
+
+### Test Summary Output
+
+When you stop the orchestrator with Ctrl+C, you'll see:
+
+```
+================================================================================
+TEST COMPLETE
+================================================================================
+Duration: 300.5s
+Transform cycles run: 2
+Macro fetches: 2
+Files written: 16
+Warnings: None
+================================================================================
+```
+
+### Configuration
+
+All testing parameters are defined in `config.yml`:
+
+```yaml
+testing:
+  enabled: false                  # Can be overridden by CLI flags
+  transform_interval_min: 2       # Transform every 2 minutes
+  macro_interval_min: 1           # Fetch macro data every 1 minute
+  macro_lookback_startup_days: 1  # Backfill 1 day on startup
+  macro_runtime_lookback_days: 1  # Fetch 1 day on each run
+  backfill_days: 3                # Backfill 3 days for testing
+  base_path: "D:/CryptoDataLake/test"  # Isolated test directory
+```
+
+### Validating Test Results
+
+After running in test mode, validate the output:
+
+```bash
+# Run final validation on test directory
+python -m tools.final_validation
+
+# Check health report
+cat D:/CryptoDataLake/test/reports/health.md
+
+# Inspect test logs
+cat D:/CryptoDataLake/test/logs/test/orchestrator.log
+```
+
+The validation script automatically detects test mode from `config.yml` and validates the test directory.
+
+### Notes
+
+- **Isolation**: Test mode uses completely separate directories - production data is never touched
+- **No Shortcuts**: All 19 symbols are collected, all validations run, all warnings fire
+- **Realistic Testing**: Only time intervals are compressed - everything else is production-grade
+- **Clean State**: Delete `D:/CryptoDataLake/test/` between test runs for clean testing
+- **Performance**: Expect ~50-100 MB of test data after a 5-minute run
+
 ## Test GUI (Streamlit)
 
 Launch the interactive dashboard for data visualization and quality monitoring:

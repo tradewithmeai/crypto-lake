@@ -307,10 +307,18 @@ class CryptoLakeValidator:
 def main():
     """Run validation and print results."""
     import json
-    from tools.common import load_config
+    from tools.common import load_config, is_test_mode
 
     config = load_config("config.yml")
-    base_path = config["general"]["base_path"]
+
+    # Check for test mode and use test base path if active
+    test_mode = is_test_mode(config)
+    if test_mode:
+        test_config = config.get("testing", {})
+        base_path = test_config.get("base_path", config["general"]["base_path"])
+        logger.info(f"[TEST MODE] Using test directory: {base_path}")
+    else:
+        base_path = config["general"]["base_path"]
 
     validator = CryptoLakeValidator(base_path)
 

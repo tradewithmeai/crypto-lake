@@ -5,7 +5,7 @@ import sys
 from loguru import logger
 
 # Local modules
-from tools.common import load_config, setup_logging
+from tools.common import load_config, setup_logging, is_test_mode
 from collector.collector import run_collector
 from transformer.transformer import run_transformer
 from tools.validator import run_validator
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crypto Data Lake")
     parser.add_argument(
         "--mode",
-        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules", "orchestrate", "backfill_binance"],
+        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules", "orchestrate", "backfill_binance", "test"],
         required=True,
         help="Pipeline mode to run.",
     )
@@ -143,6 +143,12 @@ def parse_args() -> argparse.Namespace:
         default=60,
         help="Minutes between transformer runs in orchestrate mode (default: 60, 0 to disable).",
     )
+    # Testing mode flag
+    parser.add_argument(
+        "--testing",
+        action="store_true",
+        help="Enable testing mode with accelerated intervals and isolated directory.",
+    )
     return parser.parse_args()
 
 def get_symbols_override(arg_symbols: str | None) -> list[str] | None:
@@ -154,7 +160,40 @@ def get_symbols_override(arg_symbols: str | None) -> list[str] | None:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    setup_logging("main", config)
+
+    # Detect test mode and apply overrides
+    test_mode = is_test_mode(config, args)
+    if test_mode or args.mode == "test":
+        test_mode = True
+        logger.info("TEST MODE ENABLED")
+
+        # Apply testing overrides from config
+        test_config = config.get("testing", {})
+
+        # Override base path for isolation
+        if "base_path" in test_config:
+            config["general"]["base_path"] = test_config["base_path"]
+            logger.info(f"Test mode: Using isolated directory {test_config['base_path']}")
+
+        # Override intervals for accelerated testing
+        if "transform_interval_min" in test_config:
+            args.transform_interval_min = test_config["transform_interval_min"]
+        if "macro_interval_min" in test_config:
+            args.macro_interval_min = test_config["macro_interval_min"]
+        if "macro_lookback_startup_days" in test_config:
+            args.macro_lookback_startup_days = test_config["macro_lookback_startup_days"]
+        if "macro_runtime_lookback_days" in test_config:
+            args.macro_runtime_lookback_days = test_config["macro_runtime_lookback_days"]
+
+        # For backfill mode, override lookback days
+        if args.mode == "backfill_binance" and "backfill_days" in test_config:
+            args.lookback_days = test_config["backfill_days"]
+
+        # If mode is "test", treat it as "orchestrate" with test_mode=True
+        if args.mode == "test":
+            args.mode = "orchestrate"
+
+    setup_logging("main", config, test_mode=test_mode)
 
     symbols_override = get_symbols_override(args.symbols)
 
@@ -294,6 +333,7 @@ def main() -> None:
             macro_lookback_startup_days=macro_lookback_startup_days,
             macro_runtime_lookback_days=macro_runtime_lookback_days,
             transform_interval_min=transform_interval_min,
+            test_mode=test_mode,
         )
 
         try:

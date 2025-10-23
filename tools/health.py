@@ -102,7 +102,7 @@ def summarize_files(base_path: str, day_str: str) -> Dict[str, int]:
         }
 
 
-def write_heartbeat(json_path: str, md_path: str, payload: Dict[str, Any]):
+def write_heartbeat(json_path: str, md_path: str, payload: Dict[str, Any], test_mode: bool = False):
     """
     Write health metrics to JSON and Markdown files.
 
@@ -110,8 +110,12 @@ def write_heartbeat(json_path: str, md_path: str, payload: Dict[str, Any]):
         json_path: Path to JSON heartbeat file
         md_path: Path to Markdown health report file
         payload: Health metrics payload dictionary
+        test_mode: If True, label reports as TEST mode
     """
     try:
+        # Add mode to payload
+        payload["mode"] = "TEST" if test_mode else "PRODUCTION"
+
         # Ensure directories exist
         ensure_dir(os.path.dirname(json_path))
         ensure_dir(os.path.dirname(md_path))
@@ -159,8 +163,13 @@ def _write_markdown_report(md_path: str, payload: Dict[str, Any]):
         overall_status = "UNKNOWN"
         status_icon = "[UNKNOWN]"
 
+    # Get mode
+    mode = payload.get("mode", "PRODUCTION")
+
     # Build Markdown content
     md_content = f"""# Crypto Lake Health Report
+
+**MODE:** {mode}
 
 **Generated:** {ts_utc}
 

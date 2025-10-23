@@ -38,6 +38,7 @@ class Orchestrator:
         macro_lookback_startup_days: int = 7,
         macro_runtime_lookback_days: int = 1,
         transform_interval_min: int = 60,
+        test_mode: bool = False,
     ):
         """
         Initialize orchestrator with configuration.
@@ -51,6 +52,7 @@ class Orchestrator:
             macro_lookback_startup_days: Days to backfill on startup
             macro_runtime_lookback_days: Days to fetch on each scheduled run
             transform_interval_min: Minutes between transformer runs (0 to disable)
+            test_mode: If True, enable test mode features (metrics, summary)
         """
         self.config = config
         self.exchange_name = exchange_name
@@ -60,9 +62,20 @@ class Orchestrator:
         self.macro_lookback_startup_days = macro_lookback_startup_days
         self.macro_runtime_lookback_days = macro_runtime_lookback_days
         self.transform_interval_min = transform_interval_min
+        self.test_mode = test_mode
 
         self.base_path = config["general"]["base_path"]
         self.compression = config.get("transformer", {}).get("parquet_compression", "snappy")
+
+        # Test metrics tracking
+        if self.test_mode:
+            self.test_metrics = {
+                "transform_cycles": 0,
+                "macro_fetches": 0,
+                "files_written": 0,
+                "warnings": [],
+                "start_time": datetime.now(timezone.utc)
+            }
 
         # Threading control
         self.stop_event = threading.Event()
@@ -95,8 +108,9 @@ class Orchestrator:
         }
         self.health_lock = threading.Lock()
 
+        mode_label = "[TEST MODE] " if self.test_mode else ""
         logger.info(
-            f"Orchestrator initialized: exchange={exchange_name}, "
+            f"{mode_label}Orchestrator initialized: exchange={exchange_name}, "
             f"macro_tickers={macro_tickers}, macro_interval={macro_interval_min}min, "
             f"transform_interval={transform_interval_min}min"
         )
@@ -177,6 +191,10 @@ class Orchestrator:
             logger.info("Wrote final heartbeat")
         except Exception as e:
             logger.exception(f"Failed to write final heartbeat: {e}")
+
+        # Print test summary if in test mode
+        if self.test_mode:
+            self._print_test_summary()
 
         logger.info("Orchestrator stopped")
 
@@ -354,6 +372,11 @@ class Orchestrator:
             duration = (end_time - start_time).total_seconds()
             logger.info(f"Macro fetch completed: {total_rows} rows written in {duration:.1f}s")
 
+            # Track metrics in test mode
+            if self.test_mode:
+                self.test_metrics["macro_fetches"] += 1
+                self.test_metrics["files_written"] += len(self.macro_tickers)  # Approximate
+
     def _run_transform_loop(self):
         """
         Run transformer loop: process raw data to Parquet every N minutes.
@@ -361,19 +384,33 @@ class Orchestrator:
         try:
             logger.info("Starting transformer loop...")
 
-            # Wait a bit before first transform to allow some data to accumulate
-            logger.info(f"Waiting {self.transform_interval_min} minutes before first transform")
-            for _ in range(self.transform_interval_min * 60):
-                if self.stop_event.is_set():
-                    return
-                time.sleep(1)
+            if self.test_mode:
+                # TEST MODE: Force transform after 2-minute warmup
+                logger.warning("[TEST MODE] Waiting 2 minutes before guaranteed initial transform")
+                for _ in range(120):  # 2 minutes
+                    if self.stop_event.is_set():
+                        return
+                    time.sleep(1)
 
-            # Periodic transform loop
+                logger.warning("[TEST MODE] Running guaranteed transform cycle")
+                self._run_transformer()
+                if self.test_mode:
+                    self.test_metrics["transform_cycles"] += 1
+            else:
+                # PRODUCTION: Wait full interval before first transform
+                logger.info(f"Waiting {self.transform_interval_min} minutes before first transform")
+                for _ in range(self.transform_interval_min * 60):
+                    if self.stop_event.is_set():
+                        return
+                    time.sleep(1)
+
+            # Periodic transform loop (both modes)
             while not self.stop_event.is_set():
                 logger.info("Starting scheduled transformer run")
                 self._run_transformer()
+                if self.test_mode:
+                    self.test_metrics["transform_cycles"] += 1
 
-                # Calculate next run time
                 logger.info(f"Next transformer run scheduled in {self.transform_interval_min} minutes")
                 for _ in range(self.transform_interval_min * 60):
                     if self.stop_event.is_set():
@@ -475,4 +512,26 @@ class Orchestrator:
         json_path = f"{self.base_path}/logs/health/heartbeat.json"
         md_path = f"{self.base_path}/reports/health.md"
 
-        write_heartbeat(json_path, md_path, payload)
+        write_heartbeat(json_path, md_path, payload, test_mode=self.test_mode)
+
+    def _print_test_summary(self):
+        """
+        Print test summary on shutdown.
+        """
+        duration = (datetime.now(timezone.utc) - self.test_metrics["start_time"]).total_seconds()
+
+        print("\n" + "="*80)
+        print("TEST COMPLETE")
+        print("="*80)
+        print(f"Duration: {duration:.1f}s")
+        print(f"Transform cycles run: {self.test_metrics['transform_cycles']}")
+        print(f"Macro fetches: {self.test_metrics['macro_fetches']}")
+        print(f"Files written: {self.test_metrics['files_written']}")
+
+        if self.test_metrics['warnings']:
+            print(f"Warnings: {len(self.test_metrics['warnings'])}")
+            for w in self.test_metrics['warnings'][:5]:  # Show first 5
+                print(f"  - {w}")
+        else:
+            print("Warnings: None")
+        print("="*80 + "\n")
