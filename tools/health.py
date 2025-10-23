@@ -15,7 +15,7 @@ from typing import Any, Dict
 import duckdb
 from loguru import logger
 
-from tools.common import ensure_dir
+from tools.common import ensure_dir, wait_for_parquet_files
 
 
 def summarize_files(base_path: str, day_str: str) -> Dict[str, int]:
@@ -48,19 +48,26 @@ def summarize_files(base_path: str, day_str: str) -> Dict[str, int]:
         parquet_1s_rows = 0
         try:
             parquet_pattern = f"{base_path_normalized}/parquet/binance/*/**.parquet"
-            conn = duckdb.connect(":memory:")
 
-            # Query with date filter
-            query = f"""
-            SELECT COUNT(*) as count
-            FROM read_parquet('{parquet_pattern}')
-            WHERE window_start >= TIMESTAMP '{day_str} 00:00:00'
-              AND window_start < TIMESTAMP '{day_str} 23:59:59'
-            """
-            result = conn.execute(query).fetchone()
-            if result:
-                parquet_1s_rows = result[0]
-            conn.close()
+            # Check if files exist before attempting to read
+            if not wait_for_parquet_files(parquet_pattern, timeout=10, check_interval=2):
+                logger.debug(f"Health check: No Parquet 1s files yet. System may be starting up.")
+            else:
+                conn = duckdb.connect(":memory:")
+
+                # Query with date filter
+                query = f"""
+                SELECT COUNT(*) as count
+                FROM read_parquet('{parquet_pattern}')
+                WHERE window_start >= TIMESTAMP '{day_str} 00:00:00'
+                  AND window_start < TIMESTAMP '{day_str} 23:59:59'
+                """
+                result = conn.execute(query).fetchone()
+                if result:
+                    parquet_1s_rows = result[0]
+                conn.close()
+        except duckdb.IOException:
+            logger.debug(f"No Parquet 1s files found, returning 0.")
         except Exception as e:
             logger.warning(f"Failed to count Parquet 1s rows: {e}")
 
@@ -71,19 +78,26 @@ def summarize_files(base_path: str, day_str: str) -> Dict[str, int]:
             macro_dir = os.path.join(base_path, "macro", "minute")
             if os.path.exists(macro_dir):
                 macro_pattern = f"{base_path_normalized}/macro/minute/*/**.parquet"
-                conn = duckdb.connect(":memory:")
 
-                # Query with date filter
-                query = f"""
-                SELECT COUNT(*) as count
-                FROM read_parquet('{macro_pattern}')
-                WHERE ts >= TIMESTAMP '{day_str} 00:00:00'
-                  AND ts < TIMESTAMP '{day_str} 23:59:59'
-                """
-                result = conn.execute(query).fetchone()
-                if result:
-                    macro_min_rows = result[0]
-                conn.close()
+                # Check if files exist before attempting to read
+                if not wait_for_parquet_files(macro_pattern, timeout=10, check_interval=2):
+                    logger.debug(f"Health check: No macro minute files yet. System may be starting up.")
+                else:
+                    conn = duckdb.connect(":memory:")
+
+                    # Query with date filter
+                    query = f"""
+                    SELECT COUNT(*) as count
+                    FROM read_parquet('{macro_pattern}')
+                    WHERE ts >= TIMESTAMP '{day_str} 00:00:00'
+                      AND ts < TIMESTAMP '{day_str} 23:59:59'
+                    """
+                    result = conn.execute(query).fetchone()
+                    if result:
+                        macro_min_rows = result[0]
+                    conn.close()
+        except duckdb.IOException:
+            logger.debug(f"No macro minute files found, returning 0.")
         except Exception as e:
             logger.warning(f"Failed to count macro minute rows: {e}")
 

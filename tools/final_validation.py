@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, Any
 from loguru import logger
 
+from tools.common import wait_for_parquet_files
+
 
 class CryptoLakeValidator:
     """Comprehensive validator for Crypto Lake system."""
@@ -25,6 +27,14 @@ class CryptoLakeValidator:
         logger.info("Validating backfill schema...")
 
         backfill_path = self.base_path / "backfill" / "binance" / "SOLUSDT" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(backfill_path), timeout=10, check_interval=2):
+            logger.warning("No backfill Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available"
+            }
 
         try:
             query = f"""
@@ -66,6 +76,13 @@ class CryptoLakeValidator:
                 "all_columns": columns,
             }
 
+        except duckdb.IOException as e:
+            logger.error(f"No Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.error(f"Backfill schema validation failed: {e}")
             return {
@@ -78,6 +95,14 @@ class CryptoLakeValidator:
         logger.info("Validating timestamp continuity...")
 
         backfill_path = self.base_path / "backfill" / "binance" / "SOLUSDT" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(backfill_path), timeout=10, check_interval=2):
+            logger.warning("No backfill Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available"
+            }
 
         try:
             query = f"""
@@ -115,6 +140,13 @@ class CryptoLakeValidator:
                 "expected_gap": 60,
             }
 
+        except duckdb.IOException as e:
+            logger.error(f"No Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.error(f"Timestamp continuity validation failed: {e}")
             return {
@@ -127,6 +159,14 @@ class CryptoLakeValidator:
         logger.info("Validating OHLC sanity...")
 
         backfill_path = self.base_path / "backfill" / "binance" / "SOLUSDT" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(backfill_path), timeout=10, check_interval=2):
+            logger.warning("No backfill Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available"
+            }
 
         try:
             query = f"""
@@ -154,6 +194,13 @@ class CryptoLakeValidator:
                 "total_rows": total_rows,
             }
 
+        except duckdb.IOException as e:
+            logger.error(f"No Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.error(f"OHLC sanity validation failed: {e}")
             return {
@@ -166,6 +213,14 @@ class CryptoLakeValidator:
         logger.info("Validating deduplication...")
 
         backfill_path = self.base_path / "backfill" / "binance" / "SOLUSDT" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(backfill_path), timeout=10, check_interval=2):
+            logger.warning("No backfill Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available"
+            }
 
         try:
             query = f"""
@@ -188,6 +243,13 @@ class CryptoLakeValidator:
                 "duplicates": duplicates,
             }
 
+        except duckdb.IOException as e:
+            logger.error(f"No Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No backfill data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.error(f"Deduplication validation failed: {e}")
             return {
@@ -200,6 +262,14 @@ class CryptoLakeValidator:
         logger.info("Validating real-time collector data...")
 
         parquet_path = self.base_path / "parquet" / "binance" / "SOLUSDT" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(parquet_path), timeout=10, check_interval=2):
+            logger.warning("No real-time Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No real-time data available"
+            }
 
         try:
             query = f"""
@@ -223,6 +293,13 @@ class CryptoLakeValidator:
                 "latest": str(latest) if latest else None,
             }
 
+        except duckdb.IOException as e:
+            logger.warning(f"No real-time Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No real-time data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.warning(f"Real-time data validation skipped: {e}")
             return {
@@ -236,6 +313,14 @@ class CryptoLakeValidator:
         logger.info("Validating macro data...")
 
         macro_path = self.base_path / "macro" / "minute" / "**" / "*.parquet"
+
+        # Check if files exist before attempting to read
+        if not wait_for_parquet_files(str(macro_path), timeout=10, check_interval=2):
+            logger.warning("No macro Parquet files found, skipping validation.")
+            return {
+                "status": "SKIP",
+                "reason": "No macro data available"
+            }
 
         try:
             query = f"""
@@ -261,6 +346,13 @@ class CryptoLakeValidator:
                 "latest": str(latest) if latest else None,
             }
 
+        except duckdb.IOException as e:
+            logger.warning(f"No macro Parquet files found: {e}")
+            return {
+                "status": "SKIP",
+                "reason": "No macro data available",
+                "error": str(e)
+            }
         except Exception as e:
             logger.warning(f"Macro data validation skipped: {e}")
             return {

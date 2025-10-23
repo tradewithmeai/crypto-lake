@@ -20,6 +20,7 @@ from loguru import logger
 from collector.collector import run_collector
 from tools.macro_minute import fetch_yf_1m, write_parquet, _read_existing_data
 from tools.health import write_heartbeat, summarize_files
+from tools.common import wait_for_parquet_files
 from transformer.transformer import run_transformer
 
 
@@ -151,6 +152,14 @@ class Orchestrator:
         logger.info("Started health monitoring thread")
 
         logger.info("Orchestrator started successfully")
+
+        # Wait for initial data write to complete before validation/health checks
+        logger.info("Waiting up to 60s for first data write before proceeding...")
+        parquet_pattern = f"{self.base_path}/**/**/*.parquet"
+        if wait_for_parquet_files(parquet_pattern, timeout=60, check_interval=5):
+            logger.info("Initial Parquet files detected. System ready for validation.")
+        else:
+            logger.warning("No Parquet files detected after 60s. System may still be in cold start.")
 
     def stop(self, timeout: float = 10.0):
         """

@@ -1,7 +1,10 @@
+import glob
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+import duckdb
 from loguru import logger
 import yaml
 
@@ -102,3 +105,45 @@ def get_local_date_str_utc(epoch: Optional[float] = None) -> str:
     if epoch is None:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+
+def wait_for_parquet_files(path_pattern: str, timeout: int = 90, check_interval: int = 5) -> bool:
+    """
+    Wait until at least one Parquet file matching pattern exists.
+
+    Args:
+        path_pattern: Glob pattern for Parquet files (e.g., "D:/CryptoDataLake/**/*.parquet")
+        timeout: Maximum seconds to wait (default: 90)
+        check_interval: Seconds between checks (default: 5)
+
+    Returns:
+        True if files found, False if timeout reached
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        files = glob.glob(path_pattern, recursive=True)
+        if any(os.path.isfile(f) for f in files):
+            return True
+        time.sleep(check_interval)
+    return False
+
+def safe_count_parquet(pattern: str) -> int:
+    """
+    Safely count rows in Parquet files matching pattern.
+
+    Args:
+        pattern: Glob pattern for Parquet files
+
+    Returns:
+        Row count, or 0 if no files found or error occurred
+    """
+    try:
+        conn = duckdb.connect(":memory:")
+        result = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{pattern}')").fetchone()
+        conn.close()
+        return result[0] if result else 0
+    except duckdb.IOException:
+        logger.debug(f"No Parquet files found at {pattern}, returning 0.")
+        return 0
+    except Exception as e:
+        logger.warning(f"Unexpected error counting parquet at {pattern}: {e}")
+        return 0
