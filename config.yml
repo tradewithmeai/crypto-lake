@@ -56,6 +56,7 @@ testing:
   enabled: false                  # Can be overridden by CLI flags --mode test or --testing
   transform_interval_min: 2       # Transform every 2 minutes (vs 60 in production)
   macro_interval_min: 1           # Fetch macro data every 1 minute (vs 15 in production)
+  macro_transform_interval_min: 1 # Transform macro data every 1 minute in test mode
   macro_lookback_startup_days: 1  # Backfill 1 day on startup (vs 7 in production)
   macro_runtime_lookback_days: 1  # Fetch 1 day on each run (same as production)
   backfill_days: 3                # Backfill 3 days for testing (vs 180 in production)

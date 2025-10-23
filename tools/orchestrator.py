@@ -39,6 +39,7 @@ class Orchestrator:
         macro_lookback_startup_days: int = 7,
         macro_runtime_lookback_days: int = 1,
         transform_interval_min: int = 60,
+        macro_transform_interval_min: Optional[int] = None,
         test_mode: bool = False,
     ):
         """
@@ -53,6 +54,7 @@ class Orchestrator:
             macro_lookback_startup_days: Days to backfill on startup
             macro_runtime_lookback_days: Days to fetch on each scheduled run
             transform_interval_min: Minutes between transformer runs (0 to disable)
+            macro_transform_interval_min: Minutes between macro transformer runs (defaults to macro_interval_min)
             test_mode: If True, enable test mode features (metrics, summary)
         """
         self.config = config
@@ -63,6 +65,7 @@ class Orchestrator:
         self.macro_lookback_startup_days = macro_lookback_startup_days
         self.macro_runtime_lookback_days = macro_runtime_lookback_days
         self.transform_interval_min = transform_interval_min
+        self.macro_transform_interval_min = macro_transform_interval_min if macro_transform_interval_min is not None else macro_interval_min
         self.test_mode = test_mode
 
         self.base_path = config["general"]["base_path"]
@@ -73,6 +76,7 @@ class Orchestrator:
             self.test_metrics = {
                 "transform_cycles": 0,
                 "macro_fetches": 0,
+                "macro_transform_cycles": 0,
                 "files_written": 0,
                 "warnings": [],
                 "start_time": datetime.now(timezone.utc)
@@ -83,6 +87,7 @@ class Orchestrator:
         self.ws_thread: Optional[threading.Thread] = None
         self.macro_thread: Optional[threading.Thread] = None
         self.transform_thread: Optional[threading.Thread] = None
+        self.macro_transform_thread: Optional[threading.Thread] = None
         self.health_thread: Optional[threading.Thread] = None
 
         # Shared state for health monitoring
@@ -106,6 +111,12 @@ class Orchestrator:
                 "last_run_end": None,
                 "last_error": None,
             },
+            "macro_transformer": {
+                "status": "idle",
+                "last_run_start": None,
+                "last_run_end": None,
+                "last_error": None,
+            },
         }
         self.health_lock = threading.Lock()
 
@@ -113,7 +124,8 @@ class Orchestrator:
         logger.info(
             f"{mode_label}Orchestrator initialized: exchange={exchange_name}, "
             f"macro_tickers={macro_tickers}, macro_interval={macro_interval_min}min, "
-            f"transform_interval={transform_interval_min}min"
+            f"transform_interval={transform_interval_min}min, "
+            f"macro_transform_interval={self.macro_transform_interval_min}min"
         )
 
     def start(self):
@@ -145,6 +157,17 @@ class Orchestrator:
             logger.info("Started transformer thread")
         else:
             logger.info("Transformer disabled (transform_interval_min=0)")
+
+        # Start macro transformer thread
+        if self.macro_tickers and self.macro_transform_interval_min > 0:
+            self.macro_transform_thread = threading.Thread(target=self._run_macro_transform_loop, daemon=False, name="macro-transformer")
+            self.macro_transform_thread.start()
+            logger.info("Started macro transformer thread")
+        else:
+            if not self.macro_tickers:
+                logger.info("Macro transformer disabled (no tickers configured)")
+            else:
+                logger.info("Macro transformer disabled (macro_transform_interval_min=0)")
 
         # Start health monitoring thread
         self.health_thread = threading.Thread(target=self._run_health_monitor, daemon=False, name="health-monitor")
@@ -178,6 +201,7 @@ class Orchestrator:
             ("WebSocket collector", self.ws_thread),
             ("Macro fetcher", self.macro_thread),
             ("Transformer", self.transform_thread),
+            ("Macro transformer", self.macro_transform_thread),
             ("Health monitor", self.health_thread),
         ]
 
@@ -196,6 +220,7 @@ class Orchestrator:
                 self.health_data["collector"]["status"] = "stopped"
                 self.health_data["macro_minute"]["status"] = "stopped"
                 self.health_data["transformer"]["status"] = "stopped"
+                self.health_data["macro_transformer"]["status"] = "stopped"
             self._write_health_metrics()
             logger.info("Wrote final heartbeat")
         except Exception as e:
@@ -471,6 +496,92 @@ class Orchestrator:
             duration = (end_time - start_time).total_seconds()
             logger.info(f"Transformer run completed in {duration:.1f}s")
 
+    def _run_macro_transform_loop(self):
+        """
+        Run macro transformer loop: validate macro Parquet data every N minutes.
+        """
+        try:
+            logger.info("Starting macro transformer loop...")
+
+            if self.test_mode:
+                # TEST MODE: Force macro transform after 1-minute warmup
+                logger.warning("[TEST MODE] Waiting 1 minute before guaranteed macro transform")
+                for _ in range(60):  # 1 minute
+                    if self.stop_event.is_set():
+                        return
+                    time.sleep(1)
+
+                logger.warning("[TEST MODE] Running guaranteed macro transform cycle")
+                self._run_macro_transformer()
+                if self.test_mode:
+                    self.test_metrics["macro_transform_cycles"] += 1
+            else:
+                # PRODUCTION: Wait full interval before first macro transform
+                logger.info(f"Waiting {self.macro_transform_interval_min} minutes before first macro transform")
+                for _ in range(self.macro_transform_interval_min * 60):
+                    if self.stop_event.is_set():
+                        return
+                    time.sleep(1)
+
+            # Periodic macro transform loop (both modes)
+            while not self.stop_event.is_set():
+                logger.info("Starting scheduled macro transformer run")
+                self._run_macro_transformer()
+                if self.test_mode:
+                    self.test_metrics["macro_transform_cycles"] += 1
+
+                logger.info(f"Next macro transformer run scheduled in {self.macro_transform_interval_min} minutes")
+                for _ in range(self.macro_transform_interval_min * 60):
+                    if self.stop_event.is_set():
+                        return
+                    time.sleep(1)
+
+        except Exception as e:
+            logger.exception(f"Macro transformer loop failed: {e}")
+            with self.health_lock:
+                self.health_data["macro_transformer"]["status"] = "error"
+                self.health_data["macro_transformer"]["last_error"] = str(e)
+        finally:
+            with self.health_lock:
+                self.health_data["macro_transformer"]["status"] = "stopped"
+            logger.info("Macro transformer thread exiting")
+
+    def _run_macro_transformer(self):
+        """
+        Run macro transformer to validate/ensure Parquet data.
+        """
+        start_time = datetime.now(timezone.utc)
+
+        with self.health_lock:
+            self.health_data["macro_transformer"]["status"] = "running"
+            self.health_data["macro_transformer"]["last_run_start"] = start_time.isoformat()
+            self.health_data["macro_transformer"]["last_error"] = None
+
+        try:
+            logger.info("Running macro transformer")
+            from tools.macro_minute import run_macro_transform
+
+            files_processed = run_macro_transform(
+                config=self.config,
+                base_path=self.base_path,
+                tickers=self.macro_tickers
+            )
+
+            logger.info(f"Macro transform completed: {files_processed} files validated")
+
+        except Exception as e:
+            logger.exception(f"Macro transformer failed: {e}")
+            with self.health_lock:
+                self.health_data["macro_transformer"]["last_error"] = str(e)
+        finally:
+            end_time = datetime.now(timezone.utc)
+            with self.health_lock:
+                self.health_data["macro_transformer"]["status"] = "idle"
+                self.health_data["macro_transformer"]["last_run_end"] = end_time.isoformat()
+
+            duration = (end_time - start_time).total_seconds()
+            logger.info(f"Macro transformer run completed in {duration:.1f}s")
+
     def _run_health_monitor(self):
         """
         Health monitoring loop: writes metrics every 60 seconds.
@@ -535,6 +646,7 @@ class Orchestrator:
         print(f"Duration: {duration:.1f}s")
         print(f"Transform cycles run: {self.test_metrics['transform_cycles']}")
         print(f"Macro fetches: {self.test_metrics['macro_fetches']}")
+        print(f"Macro transform cycles: {self.test_metrics['macro_transform_cycles']}")
         print(f"Files written: {self.test_metrics['files_written']}")
 
         if self.test_metrics['warnings']:

@@ -323,6 +323,18 @@ def main() -> None:
         if "transformer" in config and "schedule_minutes" in config["transformer"]:
             transform_interval_min = config["transformer"]["schedule_minutes"]
 
+        # Get macro transform interval (defaults to macro_interval_min)
+        macro_transform_interval_min = macro_interval_min
+
+        if test_mode:
+            # In test mode, check for macro_transform_interval_min override
+            test_config = config.get("testing", {})
+            if "macro_transform_interval_min" in test_config:
+                macro_transform_interval_min = test_config["macro_transform_interval_min"]
+        elif "macro_minute" in config and "macro_transform_interval_min" in config["macro_minute"]:
+            # In production, check config for macro_transform_interval_min
+            macro_transform_interval_min = config["macro_minute"]["macro_transform_interval_min"]
+
         # Create and start orchestrator
         orchestrator = Orchestrator(
             config=config,
@@ -333,6 +345,7 @@ def main() -> None:
             macro_lookback_startup_days=macro_lookback_startup_days,
             macro_runtime_lookback_days=macro_runtime_lookback_days,
             transform_interval_min=transform_interval_min,
+            macro_transform_interval_min=macro_transform_interval_min,
             test_mode=test_mode,
         )
 
