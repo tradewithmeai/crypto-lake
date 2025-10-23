@@ -14,6 +14,9 @@ A production-ready, local-first cryptocurrency market data pipeline for Windows 
 ## Features
 
 - ✅ Live streaming data collection (trades + top-of-book quotes)
+- ✅ Historical backfill via Binance REST API (up to 6 months)
+- ✅ Unified orchestrator with auto-transform scheduling
+- ✅ Macro/FX data collection (1-minute from yfinance)
 - ✅ Auto-reconnect with exponential backoff
 - ✅ Rotating JSONL file output (60-second intervals)
 - ✅ 1-second OHLCV aggregation with VWAP and spread
@@ -144,6 +147,123 @@ This creates Windows Task Scheduler jobs:
 - **Transformer**: Runs every 5 minutes
 - **Compactor**: Runs daily at 1:30 AM
 
+## Unified Orchestrator (Recommended)
+
+The orchestrator is a single long-running process that manages both crypto and macro data collection, with built-in health monitoring.
+
+### What It Does
+
+The orchestrator runs:
+1. **Binance WebSocket Collector** - Continuous crypto streaming (19 symbols)
+2. **Macro/FX Data Fetcher** - Scheduled 1-minute data collection every 15 minutes (SPY, UUP, ES=F, FX pairs)
+3. **Transformer** - Automatic transformation of raw data to Parquet every 60 minutes
+4. **One-Time Startup Backfill** - Fetches 7 days of historical macro data on launch
+5. **Health Monitoring** - Writes metrics every 60 seconds to JSON and Markdown files
+
+### How to Run
+
+**Using config.yml (recommended):**
+
+```bash
+python main.py --mode orchestrate
+```
+
+**With CLI arguments:**
+
+```bash
+python main.py --mode orchestrate \
+  --macro_tickers SPY,UUP,ES=F,EURUSD=X,GBPUSD=X,USDJPY=X \
+  --macro_interval_min 15 \
+  --macro_lookback_startup_days 7 \
+  --macro_runtime_lookback_days 1
+```
+
+### Configuration
+
+Edit `config.yml` to set default orchestrator parameters:
+
+```yaml
+transformer:
+  resample_interval_sec: 1
+  parquet_compression: "snappy"
+  schedule_minutes: 60  # Run transformer every 60 minutes (0 to disable)
+
+macro_minute:
+  tickers:
+    - SPY          # S&P 500 ETF
+    - UUP          # US Dollar Index Fund
+    - ES=F         # E-mini S&P 500 Futures
+    - EURUSD=X     # EUR/USD
+    - GBPUSD=X     # GBP/USD
+    - USDJPY=X     # USD/JPY
+    - USDCAD=X     # USD/CAD
+    - USDCHF=X     # USD/CHF
+  schedule_minutes: 15            # Fetch macro data every 15 minutes
+  startup_backfill_days: 7        # One-time backfill on startup
+  runtime_lookback_days: 1        # Fetch last 1 day on each run
+```
+
+### Health Monitoring
+
+The orchestrator writes health metrics to two files:
+
+**JSON Heartbeat** (`D:/CryptoDataLake/logs/health/heartbeat.json`):
+```json
+{
+  "ts_utc": "2025-10-22T12:00:00Z",
+  "collector": {
+    "status": "running",
+    "last_latency_p50_ms": 10.5,
+    "last_latency_p95_ms": 25.3,
+    "last_seen_ts": "2025-10-22T11:59:00Z"
+  },
+  "macro_minute": {
+    "status": "idle",
+    "last_run_start": "2025-10-22T11:45:00Z",
+    "last_run_end": "2025-10-22T11:46:00Z",
+    "last_run_rows_written": 1500,
+    "last_error": null
+  },
+  "transformer": {
+    "status": "idle",
+    "last_run_start": "2025-10-22T12:00:00Z",
+    "last_run_end": "2025-10-22T12:02:00Z",
+    "last_error": null
+  },
+  "files": {
+    "raw_count_today": 100,
+    "parquet_1s_rows_today": 50000,
+    "macro_min_rows_today": 2000
+  }
+}
+```
+
+**Markdown Report** (`D:/CryptoDataLake/reports/health.md`):
+- Overall system status (HEALTHY / ERROR / STOPPED)
+- Real-time crypto collector metrics
+- Macro/FX fetcher metrics
+- Today's data volume statistics
+
+### How to Stop
+
+Press `Ctrl+C` to gracefully stop the orchestrator. All threads will shut down cleanly within 10 seconds, and a final heartbeat will be written.
+
+### Data Collection Schedule
+
+- **Crypto Data**: Continuous streaming, files rotate every 60 seconds
+- **Macro Data**:
+  - Startup: 7-day backfill (happens once when orchestrator starts)
+  - Runtime: Fetches every 15 minutes (or as configured)
+  - Each run: Fetches last 1 day with automatic deduplication
+
+### Notes
+
+- Macro data is fetched via yfinance REST API (1-minute granularity, max 7 days)
+- Crypto data is collected via Binance WebSocket (real-time streaming)
+- Both data types are stored in partitioned Parquet format (year/month/day)
+- Health metrics update every 60 seconds (configurable in code)
+- All timestamps are UTC timezone-aware
+
 ## Test GUI (Streamlit)
 
 Launch the interactive dashboard for data visualization and quality monitoring:
@@ -272,6 +392,50 @@ python main.py --mode validate_rules \
 ## Overall Assessment
 ✅ PASS - All validation rules passed successfully.
 ```
+
+## Binance Historical Backfill
+
+Fetch historical 1-minute OHLCV data from Binance REST API to backfill up to 6 months of data:
+
+```bash
+# Backfill 180 days of historical data
+python main.py --mode backfill_binance \
+    --symbols SOLUSDT,BTCUSDT,ETHUSDT \
+    --lookback_days 180 \
+    --interval 1m
+```
+
+### Features
+
+- **REST API Integration**: Uses Binance `/api/v3/klines` endpoint
+- **Daily Chunking**: Fetches data in daily chunks to respect API limits
+- **Automatic Deduplication**: Checks existing data and only writes new timestamps
+- **Rate Limit Handling**: Exponential backoff with retry logic (up to 5 attempts)
+- **Partitioned Storage**: Writes to `D:/CryptoDataLake/backfill/binance/{SYMBOL}/year=YYYY/month=MM/day=DD/`
+- **UTC Timestamps**: All timestamps normalized to UTC timezone
+
+### Schema
+
+- **open_time**: Candle open timestamp (UTC)
+- **open**, **high**, **low**, **close**: Price data
+- **volume**: Base asset volume
+- **close_time**: Candle close timestamp (UTC)
+- **quote_volume**: Quote asset volume
+- **trades**: Number of trades in candle
+- **taker_base_vol**, **taker_quote_vol**: Taker volume metrics
+
+### Use Cases
+
+1. **Historical Analysis**: Backfill 6 months for backtesting strategies
+2. **Gap Filling**: Fill gaps from collector downtime
+3. **Bootstrap**: Initialize database before starting real-time collection
+
+### Notes
+
+- Binance limits: 1000 klines per request, 1200 requests/minute
+- Rate limiting: 0.1s sleep between requests (10 req/s max)
+- Deduplication: Existing timestamps are automatically skipped
+- Storage: Separate from real-time data (`backfill/` vs `parquet/`)
 
 ## Macro Data Collection
 

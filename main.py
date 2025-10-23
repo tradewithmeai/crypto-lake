@@ -13,12 +13,15 @@ from storage.compactor import run_compactor
 from tools.macro_minute import run_macro_minute
 from tools.slice import export_slice
 from tools.validate_rules import run_validation
+from tools.orchestrator import Orchestrator
+from tools.backfill_binance import backfill_binance
+from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crypto Data Lake")
     parser.add_argument(
         "--mode",
-        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules"],
+        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules", "orchestrate", "backfill_binance"],
         required=True,
         help="Pipeline mode to run.",
     )
@@ -100,6 +103,45 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Report output path for validate_rules mode.",
+    )
+    # Orchestrate mode arguments
+    parser.add_argument(
+        "--macro_tickers",
+        type=str,
+        default=None,
+        help="Comma-separated list of macro tickers for orchestrate mode (e.g., SPY,UUP,ES=F,EURUSD=X).",
+    )
+    parser.add_argument(
+        "--macro_interval_min",
+        type=int,
+        default=15,
+        help="Minutes between macro data fetches in orchestrate mode (default: 15).",
+    )
+    parser.add_argument(
+        "--macro_lookback_startup_days",
+        type=int,
+        default=7,
+        help="Days to backfill on startup in orchestrate mode (default: 7).",
+    )
+    parser.add_argument(
+        "--macro_runtime_lookback_days",
+        type=int,
+        default=1,
+        help="Days to fetch on each scheduled run in orchestrate mode (default: 1).",
+    )
+    # Backfill mode arguments
+    parser.add_argument(
+        "--interval",
+        type=str,
+        default="1m",
+        help="Kline interval for backfill_binance mode (default: 1m).",
+    )
+    # Orchestrator transformer scheduling
+    parser.add_argument(
+        "--transform_interval_min",
+        type=int,
+        default=60,
+        help="Minutes between transformer runs in orchestrate mode (default: 60, 0 to disable).",
     )
     return parser.parse_args()
 
@@ -184,6 +226,89 @@ def main() -> None:
             source=args.source,
             report=args.report,
         )
+        return
+
+    if args.mode == "backfill_binance":
+        if not args.symbols:
+            logger.error("--symbols is required for backfill_binance mode")
+            sys.exit(1)
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+
+        # Get base directory from config
+        base_path = config.get("base_path", "D:/CryptoDataLake")
+        backfill_dir = Path(base_path) / "backfill" / "binance"
+
+        logger.info(
+            f"Starting Binance backfill: symbols={symbols}, lookback_days={args.lookback_days}, "
+            f"interval={args.interval}"
+        )
+
+        results = backfill_binance(
+            symbols=symbols,
+            lookback_days=args.lookback_days,
+            base_dir=backfill_dir,
+            interval=args.interval,
+        )
+
+        logger.info(f"Backfill complete. Results: {results}")
+        return
+
+    if args.mode == "orchestrate":
+        # Get macro tickers from args or config
+        macro_tickers = None
+        if args.macro_tickers:
+            macro_tickers = [t.strip() for t in args.macro_tickers.split(",") if t.strip()]
+        elif "macro_minute" in config and "tickers" in config["macro_minute"]:
+            macro_tickers = config["macro_minute"]["tickers"]
+
+        if not macro_tickers:
+            logger.warning("No macro tickers configured, orchestrator will run crypto collector only")
+            macro_tickers = []
+
+        # Get schedule parameters from args or config
+        macro_interval_min = args.macro_interval_min
+        macro_lookback_startup_days = args.macro_lookback_startup_days
+        macro_runtime_lookback_days = args.macro_runtime_lookback_days
+        transform_interval_min = args.transform_interval_min
+
+        if "macro_minute" in config:
+            macro_config = config["macro_minute"]
+            if "schedule_minutes" in macro_config:
+                macro_interval_min = macro_config["schedule_minutes"]
+            if "startup_backfill_days" in macro_config:
+                macro_lookback_startup_days = macro_config["startup_backfill_days"]
+            if "runtime_lookback_days" in macro_config:
+                macro_runtime_lookback_days = macro_config["runtime_lookback_days"]
+
+        # Get transformer interval from config if available
+        if "transformer" in config and "schedule_minutes" in config["transformer"]:
+            transform_interval_min = config["transformer"]["schedule_minutes"]
+
+        # Create and start orchestrator
+        orchestrator = Orchestrator(
+            config=config,
+            exchange_name=args.exchange,
+            symbols=symbols_override,
+            macro_tickers=macro_tickers,
+            macro_interval_min=macro_interval_min,
+            macro_lookback_startup_days=macro_lookback_startup_days,
+            macro_runtime_lookback_days=macro_runtime_lookback_days,
+            transform_interval_min=transform_interval_min,
+        )
+
+        try:
+            orchestrator.start()
+
+            # Block main thread until Ctrl+C
+            logger.info("Orchestrator running. Press Ctrl+C to stop.")
+            while True:
+                import time
+                time.sleep(1)
+
+        except KeyboardInterrupt:
+            logger.info("Ctrl+C received, stopping orchestrator...")
+            orchestrator.stop()
+
         return
 
 if __name__ == "__main__":

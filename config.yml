@@ -5,7 +5,28 @@ general:
 
 exchanges:
   - name: "binance"
-    symbols: ["SOLUSDT", "SUIUSDT", "ADAUSDT"]
+    symbols:
+      # Core Crypto Set
+      - SOLUSDT
+      - SUIUSDT
+      - ADAUSDT
+      - BTCUSDT
+      - ETHUSDT
+      - BNBUSDT
+      - XRPUSDT
+      - DOGEUSDT
+      - AVAXUSDT
+      - LINKUSDT
+      - MATICUSDT
+      - LTCUSDT
+      - DOTUSDT
+      # FX Majors
+      - EURUSDT
+      - GBPUSDT
+      - JPYUSDT
+      - AUDUSDT
+      - CADUSDT
+      - CHFUSDT
     rest_url: "https://api.binance.com/api/v3"
     wss_url: "wss://stream.binance.com:9443/ws"
 
@@ -17,3 +38,20 @@ collector:
 transformer:
   resample_interval_sec: 1
   parquet_compression: "snappy"
+  schedule_minutes: 60  # Run transformer every 60 minutes in orchestrate mode (0 to disable)
+
+macro_minute:
+  # List of macro/FX tickers to fetch (1-minute data from yfinance)
+  tickers:
+    - SPY          # S&P 500 ETF
+    - UUP          # US Dollar Index Fund
+    - ES=F         # E-mini S&P 500 Futures
+    - EURUSD=X     # EUR/USD
+    - GBPUSD=X     # GBP/USD
+    - USDJPY=X     # USD/JPY
+    - USDCAD=X     # USD/CAD
+    - USDCHF=X     # USD/CHF
+  # Schedule parameters for orchestrate mode
+  schedule_minutes: 15            # Fetch macro data every 15 minutes
+  startup_backfill_days: 7        # One-time backfill on startup (max 7 days for yfinance 1m data)
+  runtime_lookback_days: 1        # Fetch last 1 day on each scheduled run
