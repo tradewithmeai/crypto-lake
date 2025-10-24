@@ -26,7 +26,7 @@ SELECT
     bid,
     ask,
     spread
-FROM read_parquet('@@BASE@@/parquet/binance/*/**.parquet')
+FROM read_parquet('@@BASE@@/parquet/binance/**/*.parquet')
 WHERE window_start IS NOT NULL
 ORDER BY symbol, ts;
 
@@ -70,7 +70,7 @@ SELECT
     trade_count,
     taker_buy_base,
     taker_buy_quote
-FROM read_parquet('@@BASE@@/klines/binance/*/**.parquet', hive_partitioning=true)
+FROM read_parquet('@@BASE@@/klines/binance/**/*.parquet', hive_partitioning=true)
 WHERE window_start IS NOT NULL
 ORDER BY symbol, ts;
 
@@ -118,7 +118,7 @@ SELECT
     funding_rate,
     open_interest,
     oi_usd
-FROM read_parquet('@@BASE@@/derivs/binance_futures/*/**.parquet', hive_partitioning=true)
+FROM read_parquet('@@BASE@@/derivs/binance_futures/**/*.parquet', hive_partitioning=true)
 WHERE ts IS NOT NULL
 ORDER BY symbol, ts;
 
@@ -134,7 +134,7 @@ SELECT
     low,
     close,
     volume
-FROM read_parquet('@@BASE@@/macro/minute/*/**.parquet', hive_partitioning=true)
+FROM read_parquet('@@BASE@@/macro/minute/**/*.parquet', hive_partitioning=true)
 WHERE ts IS NOT NULL
 ORDER BY ticker, ts;
 

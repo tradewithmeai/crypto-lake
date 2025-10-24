@@ -51,6 +51,35 @@ macro_minute:
   startup_backfill_days: 7        # One-time backfill on startup (max 7 days for yfinance 1m data)
   runtime_lookback_days: 1        # Fetch last 1 day on each scheduled run
 
+qa:
+  # QA Sidecar Configuration
+  enable_ai: true                 # Enable AI/statistical anomaly detection
+  hourly_window_min: 90           # Window for hourly QA runs (minutes)
+  daily_run_utc: "00:15"          # Daily QA run time (UTC, HH:MM format)
+  ai_labeler: "rules"             # Labeler type: "rules", "llm", or "hybrid"
+
+  # IsolationForest detector configuration
+  iforest:
+    n_estimators: 200             # Number of trees
+    contamination: 0.005          # Expected anomaly proportion (0.5%)
+    random_state: 42              # Random seed for reproducibility
+
+  # Z-score detector configuration
+  zscore:
+    window: "1h"                  # Rolling window for statistics
+    k: 5.0                        # Z-score threshold
+
+  # Jump detector configuration
+  jump:
+    k_sigma: 6.8                  # Jump threshold in standard deviations
+    spread_stable_bps: 50         # Maximum spread in bps for "stable" condition
+    cooldown_seconds: 5           # Cluster window: merge anomalies within this window
+    min_trade_count: 5            # Skip ultra-thin seconds with fewer trades
+
+  # Reporting configuration
+  reporting:
+    anomalies_top_n: 10           # Show top-N symbols by anomaly count in reports
+
 testing:
   # Testing mode for rapid validation (minutes instead of hours)
   enabled: false                  # Can be overridden by CLI flags --mode test or --testing
