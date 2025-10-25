@@ -307,9 +307,35 @@ class IsolationForestDetector:
             logger.warning("No valid features for IsolationForest")
             return []
 
-        # Fit model on CLEAN data only
+        # Compute valid_mask: which rows survived dropna() in feature computation
+        # feature_df was computed from df, but feature_matrix only contains non-NaN rows
+        # We need to identify which rows in df correspond to rows in feature_matrix
+        valid_mask = feature_df.notna().all(axis=1)
+
+        # Subset df and clean_mask to match feature_matrix alignment
+        df_valid = df.loc[valid_mask]
+
+        # Align clean_mask to match feature_matrix length
         if clean_mask is not None:
-            clean_features = feature_matrix[clean_mask]
+            if hasattr(clean_mask, "loc"):
+                clean_mask_valid = clean_mask.loc[valid_mask]
+            else:
+                # Convert to numpy array if not a Series
+                clean_mask_valid = np.array(clean_mask)[valid_mask.values]
+        else:
+            clean_mask_valid = None
+
+        # Log alignment adjustment if rows were dropped
+        if len(df_valid) < len(df):
+            logger.debug(f"Adjusted mask alignment: {len(df)}→{len(df_valid)} rows after NaN filtering")
+
+        # Verify alignment
+        assert feature_matrix.shape[0] == len(df_valid), \
+            f"Feature matrix length {feature_matrix.shape[0]} != df_valid length {len(df_valid)}"
+
+        # Fit model on CLEAN data only
+        if clean_mask_valid is not None:
+            clean_features = feature_matrix[clean_mask_valid]
         else:
             clean_features = feature_matrix
 
@@ -328,7 +354,7 @@ class IsolationForestDetector:
             random_state=self.random_state,
             n_jobs=-1
         )
-        self.model.fit(scaled_features[clean_mask] if clean_mask is not None else scaled_features)
+        self.model.fit(scaled_features[clean_mask_valid] if clean_mask_valid is not None else scaled_features)
 
         # Predict on all data
         predictions = self.model.predict(scaled_features)
@@ -337,22 +363,22 @@ class IsolationForestDetector:
         # Find anomalies (-1 = anomaly, 1 = normal)
         anomaly_mask = predictions == -1
 
-        # Emit anomalies
-        for idx in feature_df[anomaly_mask].index:
-            row = df.loc[idx]
-            features_dict = feature_df.loc[idx].to_dict()
+        # Emit anomalies using aligned iteration
+        for i, (pred, score, (idx, row)) in enumerate(zip(predictions, scores, df_valid.iterrows())):
+            if pred == -1:  # Anomaly detected
+                features_dict = feature_df.loc[idx].to_dict()
 
-            # Remove NaNs from features
-            features_dict = {k: (float(v) if not pd.isna(v) else None) for k, v in features_dict.items()}
+                # Remove NaNs from features
+                features_dict = {k: (float(v) if not pd.isna(v) else None) for k, v in features_dict.items()}
 
-            anomalies.append({
-                "symbol": row["symbol"],
-                "ts": row["ts"].isoformat(),
-                "features": features_dict,
-                "detector": "IFOREST",
-                "label": "anomaly",
-                "rationale": f"IsolationForest anomaly score {scores[idx]:.4f}"
-            })
+                anomalies.append({
+                    "symbol": row["symbol"],
+                    "ts": row["ts"].isoformat(),
+                    "features": features_dict,
+                    "detector": "IFOREST",
+                    "label": "anomaly",
+                    "rationale": f"IsolationForest anomaly score {score:.4f}"
+                })
 
         logger.info(f"IsolationForestDetector found {len(anomalies)} anomalies")
         return anomalies
