@@ -94,11 +94,12 @@ testing:
 # If not specified, falls back to DuckDB in-memory for QA operations
 # database:
 #   # Option 1: Full connection string with embedded credentials
-#   url: "duckdb:///:memory:"
+#   url: "duckdb:///./crypto.duckdb"
 #   # Examples:
 #   #   url: "sqlite:///crypto_lake.db"                    # Local SQLite file
 #   #   url: "postgresql://user:pass@localhost:5432/crypto_lake"  # PostgreSQL
 #   #   url: "postgresql://user:pass@/crypto_lake?host=/cloudsql/project:region:instance"  # Google Cloud SQL
+#   #   url: "postgresql+pg8000://user:pass@/crypto_lake?unix_sock=/cloudsql/project:region:instance/.s.PGSQL.5432"  # GCP Cloud SQL with pg8000
 #
 #   # Option 2: Separate credential fields (used as fallback if url doesn't contain credentials)
 #   # type: "postgres"                 # Database type: postgres, sqlite, duckdb
@@ -112,3 +113,12 @@ testing:
 #   # pool_size: 5                     # Number of connections in pool
 #   # max_overflow: 10                 # Maximum overflow connections
 #   # pool_timeout: 30                 # Pool timeout in seconds
+
+# Google Cloud Storage configuration (for Parquet data sync)
+gcs:
+  bucket_name: ""                     # GCS bucket name (e.g., "crypto-lake-data")
+
+# Google Cloud Platform configuration (for Cloud Run deployment)
+gcp:
+  project_id: ""                      # GCP project ID
+  region: ""                          # GCP region (e.g., "europe-west2")

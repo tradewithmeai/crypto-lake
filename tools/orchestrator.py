@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+# Initialise quiet-by-default logging for production/containerised environments
+from tools.logging_setup import setup_logging
+setup_logging()
+
 from collector.collector import run_collector
 from tools.macro_minute import fetch_yf_1m, write_parquet, _read_existing_data
 from tools.health import write_heartbeat, summarize_files

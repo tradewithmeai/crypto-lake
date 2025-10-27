@@ -10,13 +10,16 @@ from typing import Any, Dict, Optional
 import websockets
 from loguru import logger
 
+# Initialise quiet-by-default logging for production/containerised environments
+from tools.logging_setup import setup_logging
+setup_logging()
+
 from tools.common import (
     ensure_dir,
     ensure_parent_dir,
     get_exchange_config,
     get_local_date_str_utc,
     get_raw_base_dir,
-    setup_logging,
 )
 
 @dataclass

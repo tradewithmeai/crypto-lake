@@ -4,8 +4,12 @@ import os
 import sys
 from loguru import logger
 
+# Initialise quiet-by-default logging for production/containerised environments
+from tools.logging_setup import setup_logging
+setup_logging()
+
 # Local modules
-from tools.common import load_config, setup_logging, is_test_mode
+from tools.common import load_config, is_test_mode
 from collector.collector import run_collector
 from transformer.transformer import run_transformer
 from tools.validator import run_validator
