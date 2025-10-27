@@ -17,7 +17,6 @@ exchanges:
       - DOGEUSDT
       - AVAXUSDT
       - LINKUSDT
-      - MATICUSDT
       - LTCUSDT
       - DOTUSDT
       # FX Majors
@@ -66,7 +65,7 @@ qa:
 
   # Z-score detector configuration
   zscore:
-    window: "1h"                  # Rolling window for statistics
+    window: 3600                  # use 3600 instead of "1h"
     k: 5.0                        # Z-score threshold
 
   # Jump detector configuration
@@ -90,3 +89,26 @@ testing:
   macro_runtime_lookback_days: 1  # Fetch 1 day on each run (same as production)
   backfill_days: 3                # Backfill 3 days for testing (vs 180 in production)
   base_path: "D:/CryptoDataLake/test"  # Isolated test directory
+
+# Optional: SQL database configuration
+# If not specified, falls back to DuckDB in-memory for QA operations
+# database:
+#   # Option 1: Full connection string with embedded credentials
+#   url: "duckdb:///:memory:"
+#   # Examples:
+#   #   url: "sqlite:///crypto_lake.db"                    # Local SQLite file
+#   #   url: "postgresql://user:pass@localhost:5432/crypto_lake"  # PostgreSQL
+#   #   url: "postgresql://user:pass@/crypto_lake?host=/cloudsql/project:region:instance"  # Google Cloud SQL
+#
+#   # Option 2: Separate credential fields (used as fallback if url doesn't contain credentials)
+#   # type: "postgres"                 # Database type: postgres, sqlite, duckdb
+#   # host: "localhost"                # Database host
+#   # port: 5432                       # Database port
+#   # user: "crypto_user"              # Database username
+#   # password: "secure_password"      # Database password
+#   # database: "crypto_lake"          # Database name
+#
+#   # Connection pool settings (optional, SQLAlchemy only)
+#   # pool_size: 5                     # Number of connections in pool
+#   # max_overflow: 10                 # Maximum overflow connections
+#   # pool_timeout: 30                 # Pool timeout in seconds

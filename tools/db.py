@@ -2,14 +2,38 @@
 Centralized DuckDB connection and view management.
 
 Handles @@BASE@@ placeholder resolution from config.yml for all SQL views.
+Supports multi-engine architecture: DuckDB, SQLite, and PostgreSQL.
 """
 
 import glob
 import os
-from typing import Optional
+from typing import Dict, Optional, Union
 
 import duckdb
 from loguru import logger
+
+try:
+    from sqlalchemy.engine import Engine
+    from tools.sql_manager import init_database, register_views_if_supported
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    SQLALCHEMY_AVAILABLE = False
+    Engine = None
+
+
+def is_sqlalchemy_engine(conn) -> bool:
+    """
+    Check if connection is SQLAlchemy Engine vs DuckDB connection.
+
+    Args:
+        conn: Database connection object
+
+    Returns:
+        True if SQLAlchemy Engine, False if DuckDB connection
+    """
+    if Engine and isinstance(conn, Engine):
+        return True
+    return hasattr(conn, 'execute') and not isinstance(conn, duckdb.DuckDBPyConnection)
 
 
 def normalise_base(base_path: str) -> str:
@@ -68,18 +92,60 @@ def connect_and_register_views(
     base_path: str,
     sql_path: str = "sql/views.sql",
     database: str = ":memory:",
-) -> duckdb.DuckDBPyConnection:
+    config: Optional[Dict] = None,
+) -> Union[duckdb.DuckDBPyConnection, "Engine"]:
     """
-    Create DuckDB connection and register all views from views.sql.
+    Create database connection and register all views from views.sql.
+
+    Supports multi-engine architecture:
+    - If config contains database.url → use SQL manager (SQLAlchemy/DuckDB)
+    - Otherwise → fallback to DuckDB in-memory
 
     Args:
         base_path: Base data lake path from config
         sql_path: Path to views.sql file
         database: DuckDB database path (default: in-memory)
+        config: Optional configuration dictionary with database settings
 
     Returns:
-        DuckDB connection with views registered
+        Database connection (SQLAlchemy Engine or DuckDB connection)
     """
+    # Check for database configuration
+    if config and "database" in config:
+        db_config = config["database"]
+
+        # Check if database.url or database.type is configured
+        if db_config.get("url") or db_config.get("type"):
+            if not SQLALCHEMY_AVAILABLE:
+                logger.warning("Database URL configured but SQLAlchemy not available, falling back to DuckDB")
+            else:
+                logger.info("Database URL configured, using SQL engine")
+                try:
+                    # Initialize SQL engine from config
+                    import yaml
+                    import tempfile
+
+                    # Create temporary config file for sql_manager
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+                        yaml.dump(config, f)
+                        temp_config_path = f.name
+
+                    try:
+                        engine = init_database("auto", temp_config_path)
+
+                        # Register views if supported
+                        register_views_if_supported(engine, base_path)
+
+                        return engine
+                    finally:
+                        os.remove(temp_config_path)
+
+                except Exception as e:
+                    logger.error(f"Failed to initialize SQL engine: {e}")
+                    logger.info("Falling back to DuckDB in-memory")
+
+    # Fallback: Use DuckDB (backward compatibility)
+    logger.info("No database.url configured, using DuckDB in-memory")
     # Normalise base path for DuckDB
     base_norm = normalise_base(base_path)
 
@@ -115,15 +181,17 @@ def connect_and_register_views(
     return conn
 
 
-def get_connection_with_views(config: dict) -> duckdb.DuckDBPyConnection:
+def get_connection_with_views(config: dict) -> Union[duckdb.DuckDBPyConnection, "Engine"]:
     """
-    Convenience wrapper to get a DuckDB connection with views from config.
+    Convenience wrapper to get a database connection with views from config.
+
+    Supports multi-engine architecture based on config.database settings.
 
     Args:
-        config: Configuration dictionary with general.base_path
+        config: Configuration dictionary with general.base_path and optional database settings
 
     Returns:
-        DuckDB connection with views registered
+        Database connection (SQLAlchemy Engine or DuckDB connection) with views registered
     """
     base_path = config["general"]["base_path"]
-    return connect_and_register_views(base_path)
+    return connect_and_register_views(base_path, config=config)

@@ -1,0 +1,22 @@
+# SQL Database Integration Dependencies
+# Install with: pip install -r requirements-sql.txt
+
+# Core SQL support
+sqlalchemy>=2.0.0                # SQL toolkit and ORM
+psycopg2-binary>=2.9.0           # PostgreSQL adapter (binary package for Windows)
+
+# Optional: Faster PostgreSQL driver (if psycopg2-binary has issues)
+# psycopg>=3.1.0                 # Pure Python PostgreSQL adapter (PostgreSQL 3.x)
+
+# DuckDB support (already in main requirements)
+duckdb>=0.8.0                    # DuckDB for in-memory analytics
+
+# For YAML config parsing (already in main requirements)
+PyYAML>=6.0                      # YAML configuration parser
+
+# For logging (already in main requirements)
+loguru>=0.7.0                    # Structured logging
+
+# For data handling
+pandas>=2.0.0                    # Data manipulation
+pyarrow>=12.0.0                  # Parquet file support

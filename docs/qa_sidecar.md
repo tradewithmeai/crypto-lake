@@ -510,13 +510,334 @@ A: `D:/CryptoDataLake/logs/qa/qa_{module}.log` with 14-day rotation.
 
 ---
 
+## SQL Database Integration
+
+The QA sidecar supports optional SQL database backends for centralized storage and analytics.
+
+### Overview
+
+By default, Crypto Lake uses **DuckDB in-memory** for QA operations, querying Parquet files directly. For production deployments, you can optionally configure a **persistent SQL database** (PostgreSQL, SQLite, or DuckDB on-disk) to:
+
+- Centralize data across multiple collectors
+- Enable shared analytics dashboards
+- Support remote queries (e.g., Grafana, Metabase)
+- Scale to cloud deployments (Google Cloud SQL, AWS RDS)
+
+**Key Features:**
+- Backward compatible: Falls back to DuckDB if database not configured
+- Portable schema: Works with SQLite, PostgreSQL, and DuckDB
+- Automated migrations: Export DuckDB views → SQL tables
+- Integrity verification: Built-in row count checks
+
+---
+
+### Database Configuration
+
+Add a `database:` section to `config.yml`:
+
+#### Option 1: Full Connection String (Recommended)
+
+```yaml
+database:
+  # DuckDB (on-disk)
+  url: "duckdb:///D:/CryptoDataLake/crypto_lake.duckdb"
+
+  # SQLite (local file)
+  url: "sqlite:///D:/CryptoDataLake/crypto_lake.db"
+
+  # PostgreSQL (local)
+  url: "postgresql://crypto_user:password@localhost:5432/crypto_lake"
+
+  # Google Cloud SQL (Unix socket)
+  url: "postgresql://user:pass@/crypto_lake?host=/cloudsql/project:region:instance"
+```
+
+#### Option 2: Separate Credential Fields
+
+```yaml
+database:
+  type: "postgres"                # Database type: postgres, sqlite, duckdb
+  host: "localhost"               # Database host
+  port: 5432                      # Database port
+  user: "crypto_user"             # Database username
+  password: "secure_password"     # Database password
+  database: "crypto_lake"         # Database name
+
+  # Connection pool settings (optional)
+  pool_size: 5                    # Number of connections in pool
+  max_overflow: 10                # Maximum overflow connections
+  pool_timeout: 30                # Pool timeout in seconds
+```
+
+**Precedence:** If both formats are provided, `url` takes precedence. Credentials in `url` override separate fields.
+
+---
+
+### Schema Initialization
+
+#### 1. Apply Schema to SQL Database
+
+```bash
+# Using Python API
+python -c "from tools.sql_manager import init_database, apply_schema; \
+  engine = init_database('auto', 'config.yml'); \
+  apply_schema(engine)"
+```
+
+**Tables Created:**
+- `bars_1s` - 1-second OHLCV bars (symbol, ts, open, high, low, close, volume_base, volume_quote, trade_count, vwap, bid, ask, spread)
+- `bars_1m` - 1-minute OHLCV bars (aggregated from bars_1s)
+- `klines_1m` - 1-minute klines from REST API (for comparison)
+- `compare_our_vs_kline_1m` - Comparison table (our bars vs klines)
+- `funding_oi_hourly` - Funding rates and open interest (hourly)
+- `macro_minute` - Macro/FX data (SPY, UUP, ES=F, EURUSD=X, etc.)
+
+**Primary Keys:** All tables use composite primary keys on `(symbol, ts)` or `(macro_key, ts)` for efficient time-series queries.
+
+**Indexes:** Automatically created for:
+- `idx_{table}_symbol_ts` - Symbol + timestamp composite index
+- `idx_{table}_ts` - Timestamp-only index for time-range queries
+
+#### 2. Verify Schema Integrity
+
+```bash
+# Using Python API
+python -c "from tools.sql_manager import init_database, verify_integrity; \
+  engine = init_database('auto', 'config.yml'); \
+  all_ok, missing = verify_integrity(engine); \
+  print('✓ All tables present' if all_ok else f'✗ Missing: {missing}')"
+```
+
+---
+
+### Migrating Data from DuckDB to SQL
+
+Use `tools/migrate_sql.py` to export DuckDB views to SQL database.
+
+#### Full Migration (DuckDB → SQL)
+
+```bash
+# Migrate all tables from DuckDB to PostgreSQL
+python -m tools.migrate_sql --mode migrate --config config.yml
+
+# Dry-run mode (preview operations without executing)
+python -m tools.migrate_sql --mode migrate --config config.yml --dry-run
+```
+
+**How it works:**
+1. Connects to DuckDB and registers Parquet-backed views
+2. Exports each view to temporary Parquet files
+3. Imports Parquet files to SQL database using bulk insert
+4. Uses PostgreSQL COPY for optimal performance (100K+ rows/sec)
+
+#### Step-by-Step Migration
+
+```bash
+# Step 1: Export DuckDB views to Parquet
+python -m tools.migrate_sql \
+  --mode export \
+  --config config.yml \
+  --output D:/CryptoDataLake/export/
+
+# Step 2: Import Parquet files to SQL database
+python -m tools.migrate_sql \
+  --mode import \
+  --config config.yml \
+  --input D:/CryptoDataLake/export/
+```
+
+#### Verify Migration Integrity
+
+```bash
+# Compare row counts between DuckDB and SQL
+python -m tools.migrate_sql --mode verify --config config.yml
+```
+
+**Output:**
+```
+============================================================
+MIGRATION VERIFICATION SUMMARY
+============================================================
+Table                          Source          Target          Status
+------------------------------------------------------------
+bars_1s                        3,456,789       3,456,789       ✓ MATCH
+bars_1m                        57,612          57,612          ✓ MATCH
+klines_1m                      57,612          57,612          ✓ MATCH
+compare_our_vs_kline_1m        57,612          57,612          ✓ MATCH
+funding_oi_hourly              240             240             ✓ MATCH
+macro_minute                   10,080          10,080          ✓ MATCH
+============================================================
+Overall: PASSED
+============================================================
+```
+
+---
+
+### Supported Databases
+
+| Database | Support Level | Notes |
+|----------|--------------|-------|
+| **DuckDB** | ✅ Full | In-memory or on-disk, Parquet-backed views |
+| **SQLite** | ✅ Full | Local file, good for small deployments |
+| **PostgreSQL** | ✅ Full | Recommended for production, supports partitioning |
+| **Google Cloud SQL** | ✅ Full | PostgreSQL-compatible, use Unix socket connection |
+| **AWS RDS** | ✅ Full | PostgreSQL-compatible |
+| **MySQL** | ⚠️ Not tested | May work via SQLAlchemy, not officially supported |
+
+---
+
+### PostgreSQL Partitioning (Optional)
+
+For high-volume production deployments, enable table partitioning by time.
+
+**Schema Hints:** `sql/schema.sql` includes commented partitioning hints:
+
+```sql
+CREATE TABLE IF NOT EXISTS bars_1s (
+    symbol TEXT NOT NULL,
+    ts TIMESTAMP NOT NULL,
+    ...
+    PRIMARY KEY (symbol, ts)
+); -- PARTITION BY RANGE (ts);
+
+-- Uncomment to enable monthly partitioning:
+-- CREATE TABLE bars_1s_2025_01 PARTITION OF bars_1s
+--   FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+```
+
+**Benefits:**
+- Faster time-range queries (prune irrelevant partitions)
+- Easier data retention (drop old partitions instead of DELETE)
+- Parallel query execution (PostgreSQL 11+)
+
+**Setup:**
+1. Uncomment partitioning hints in `sql/schema.sql`
+2. Create partitions for each month/day
+3. Set up automated partition management (e.g., `pg_partman`)
+
+---
+
+### Use Cases
+
+#### 1. Centralized Analytics Dashboard
+
+**Scenario:** Multiple collectors writing to shared PostgreSQL database
+
+**Setup:**
+```yaml
+# On all collector nodes
+database:
+  url: "postgresql://user:pass@analytics.example.com:5432/crypto_lake"
+```
+
+**Benefits:**
+- Single source of truth for all symbols
+- Grafana/Metabase can query directly
+- No need to consolidate Parquet files
+
+#### 2. Cloud-Native Deployment
+
+**Scenario:** Running on Google Cloud Platform with Cloud SQL
+
+**Setup:**
+```yaml
+database:
+  url: "postgresql://user:pass@/crypto_lake?host=/cloudsql/project-id:us-central1:crypto-db"
+```
+
+**Benefits:**
+- Managed backups and high availability
+- Automatic failover and read replicas
+- Integrates with BigQuery for analytics
+
+#### 3. Local SQLite for Testing
+
+**Scenario:** Testing QA pipelines without PostgreSQL
+
+**Setup:**
+```yaml
+database:
+  url: "sqlite:///D:/CryptoDataLake/test.db"
+```
+
+**Benefits:**
+- Zero configuration
+- Self-contained database file
+- Perfect for CI/CD tests
+
+---
+
+### Testing SQL Integration
+
+Run the SQL integration test suite:
+
+```bash
+# All SQL tests (schema, integrity, migration)
+python -m pytest tests/sql/ -v
+
+# Expected output (all tests should pass):
+# tests/sql/test_schema.py::test_apply_schema_creates_tables PASSED
+# tests/sql/test_schema.py::test_apply_schema_idempotent PASSED
+# tests/sql/test_schema.py::test_table_columns_correct PASSED
+# tests/sql/test_schema.py::test_primary_keys_created PASSED
+# tests/sql/test_schema.py::test_indexes_created PASSED
+# tests/sql/test_schema.py::test_verify_integrity_pass PASSED
+# ... (13 tests total)
+```
+
+---
+
+### Troubleshooting SQL Integration
+
+#### Database Connection Fails
+
+**Symptom:** `Failed to connect to postgres: could not connect to server`
+
+**Fixes:**
+1. Verify connection string in `config.yml`
+2. Check database is running: `psql -h localhost -U crypto_user -d crypto_lake`
+3. Check firewall allows connections on port 5432
+4. Verify credentials are correct
+
+#### Schema Creation Fails
+
+**Symptom:** `Failed to apply schema: relation "bars_1s" already exists`
+
+**Fixes:**
+1. This is normal - schema creation is idempotent
+2. Run `verify_integrity()` to confirm tables exist
+3. If tables are corrupted, drop and recreate: `DROP TABLE bars_1s CASCADE; apply_schema()`
+
+#### Migration Slow on Large Datasets
+
+**Symptom:** Migration takes hours for millions of rows
+
+**Fixes:**
+1. Use PostgreSQL COPY instead of INSERT (automatic for large datasets)
+2. Increase batch size: `--batch-size 500000`
+3. Disable indexes during import, rebuild after
+4. Use `--dry-run` to estimate time before running
+
+#### Row Count Mismatch After Migration
+
+**Symptom:** Verification shows `bars_1s: 1,000,000 → 999,500 rows (MISMATCH)`
+
+**Fixes:**
+1. Check for duplicate primary keys (migration skips duplicates)
+2. Check database constraints (may reject invalid rows)
+3. Re-run migration with clean target database
+4. Review migration logs for errors
+
+---
+
 ## Support
 
 For issues or questions:
 1. Check this documentation
 2. Review logs in `D:/CryptoDataLake/logs/qa/`
 3. Run tests: `python -m pytest tests/qa/ -v`
-4. Check recent QA reports for patterns
+4. For SQL issues: `python -m pytest tests/sql/ -v`
+5. Check recent QA reports for patterns
 
 ---
 
