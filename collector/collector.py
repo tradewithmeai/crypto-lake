@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import signal
 import time
 from collections import deque
@@ -21,6 +22,17 @@ from tools.common import (
     get_local_date_str_utc,
     get_raw_base_dir,
 )
+
+
+class NetworkTimeoutWarning(UserWarning):
+    """
+    Custom warning for network timeout and connection issues.
+
+    Emitted when the collector encounters transient network failures
+    and enters exponential backoff retry logic. This provides a searchable
+    token for monitoring and alerting in production deployments.
+    """
+    pass
 
 @dataclass
 class RotatingJSONLWriter:
@@ -297,9 +309,21 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
                 # If consume returns without exception and no stop requested, break
                 if not stop_event.is_set():
                     logger.warning("WebSocket consume ended unexpectedly; will reconnect.")
-                    await asyncio.sleep(backoff)
+                    logger.warning("NetworkTimeoutWarning")
+                    # Add jitter to prevent thundering herd
+                    jitter = random.uniform(0, 0.5)
+                    await asyncio.sleep(backoff + jitter)
                     backoff = min(max_backoff, backoff * 2)
+            except (asyncio.TimeoutError, websockets.ConnectionClosed, ConnectionError) as e:
+                # Transient network failures - emit searchable warning token
+                logger.warning(f"Network timeout/connection issue: {e}")
+                logger.warning("NetworkTimeoutWarning")
+                # Exponential backoff with jitter to prevent thundering herd
+                jitter = random.uniform(0, 0.5)
+                await asyncio.sleep(backoff + jitter)
+                backoff = min(max_backoff, backoff * 2)
             except Exception as e:
+                # Unexpected errors - log and reconnect
                 logger.error(f"Collector error / reconnecting in {backoff}s: {e}")
                 await asyncio.sleep(backoff)
                 backoff = min(max_backoff, max(5, backoff * 2))
