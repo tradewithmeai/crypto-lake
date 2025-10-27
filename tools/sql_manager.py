@@ -24,7 +24,12 @@ def get_connection_string(config: Dict) -> str:
     """
     Parse database configuration into SQLAlchemy connection string.
 
-    Supports both embedded credentials and separate fields with fallback logic.
+    Uses env-first approach for cloud deployments with secure fallback chain:
+    1. CRYPTO_DB_URL environment variable (highest priority)
+    2. Build from individual env vars (CRYPTO_DB_USER, CRYPTO_DB_PASS, etc.)
+    3. config.yml database.url
+    4. config.yml separate fields
+    5. Local DuckDB fallback (lowest priority)
 
     Args:
         config: Database configuration dictionary
@@ -38,34 +43,60 @@ def get_connection_string(config: Dict) -> str:
         >>> get_connection_string({"type": "postgres", "host": "localhost", "database": "crypto"})
         'postgresql://localhost/crypto'
     """
+    # Priority 1: Check CRYPTO_DB_URL environment variable
+    url = os.getenv("CRYPTO_DB_URL", "").strip()
+    if url:
+        logger.debug("Using database URL from CRYPTO_DB_URL environment variable")
+        return url
+
+    # Priority 2: Build from individual environment variables
+    user = os.getenv("CRYPTO_DB_USER", "").strip()
+    password = os.getenv("CRYPTO_DB_PASS", "").strip()
+    host = os.getenv("CRYPTO_DB_HOST", "").strip()
+    port = os.getenv("CRYPTO_DB_PORT", "").strip()
+    db_name = os.getenv("CRYPTO_DB_NAME", "").strip()
+
+    if user and password and host:
+        # Build PostgreSQL connection string from env vars
+        port_str = f":{port}" if port else ":5432"
+        db_name = db_name or "crypto_lake"
+        url = f"postgresql+psycopg2://{user}:{password}@{host}{port_str}/{db_name}"
+        logger.debug("Built database URL from CRYPTO_DB_* environment variables")
+        return url
+
+    # Priority 3 & 4: Check config.yml
     db_config = config.get("database", {})
 
-    # Option 1: Full connection string with embedded credentials
+    # Option 1: Full connection string from config
     if "url" in db_config and db_config["url"]:
+        logger.debug("Using database URL from config.yml")
         return db_config["url"]
 
-    # Option 2: Build from separate fields
-    db_type = db_config.get("type", "duckdb")
-    host = db_config.get("host", "localhost")
-    port = db_config.get("port")
-    user = db_config.get("user")
-    password = db_config.get("password")
-    database = db_config.get("database", "crypto_lake")
+    # Option 2: Build from config separate fields
+    db_type = db_config.get("type", "").strip()
+    if db_type:
+        host = db_config.get("host", "localhost")
+        port = db_config.get("port")
+        user = db_config.get("user")
+        password = db_config.get("password")
+        database = db_config.get("database", "crypto_lake")
 
-    # Construct connection string
-    if db_type == "postgres" or db_type == "postgresql":
-        # PostgreSQL format: postgresql://user:pass@host:port/database
-        creds = f"{user}:{password}@" if user and password else ""
-        port_str = f":{port}" if port else ""
-        return f"postgresql://{creds}{host}{port_str}/{database}"
-    elif db_type == "sqlite":
-        # SQLite format: sqlite:///path/to/database.db
-        return f"sqlite:///{database}"
-    elif db_type == "duckdb":
-        # DuckDB format: duckdb:///path/to/database.db or duckdb:///:memory:
-        return f"duckdb:///{database}"
-    else:
-        raise ValueError(f"Unsupported database type: {db_type}")
+        # Construct connection string from config fields
+        if db_type == "postgres" or db_type == "postgresql":
+            # PostgreSQL format: postgresql://user:pass@host:port/database
+            creds = f"{user}:{password}@" if user and password else ""
+            port_str = f":{port}" if port else ""
+            return f"postgresql://{creds}{host}{port_str}/{database}"
+        elif db_type == "sqlite":
+            # SQLite format: sqlite:///path/to/database.db
+            return f"sqlite:///{database}"
+        elif db_type == "duckdb":
+            # DuckDB format: duckdb:///path/to/database.db or duckdb:///:memory:
+            return f"duckdb:///{database}"
+
+    # Priority 5: Fallback to local DuckDB (no secrets required)
+    logger.info("No database configuration found; using local DuckDB fallback")
+    return "duckdb:///./crypto.duckdb"
 
 
 def sanitize_connection_string(conn_str: str) -> str:
@@ -145,6 +176,7 @@ def init_database(engine: str = "duckdb", config_path: str = "config.yml") -> Da
                 pool_size=pool_size,
                 max_overflow=max_overflow,
                 pool_timeout=pool_timeout,
+                pool_pre_ping=True,  # Enable connection health checks
                 echo=False
             )
 
