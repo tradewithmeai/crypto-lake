@@ -1,7 +1,7 @@
 general:
   timezone: "UTC"
   log_level: "INFO"
-  base_path: "D:/CryptoDataLake"
+  base_path: "/data"
 
 exchanges:
   - name: "binance"
