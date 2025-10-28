@@ -197,7 +197,7 @@ def main() -> None:
         if args.mode == "test":
             args.mode = "orchestrate"
 
-    setup_logging("main", config, test_mode=test_mode)
+    # Logging already initialized at module level (line 8-9)
 
     symbols_override = get_symbols_override(args.symbols)
 
