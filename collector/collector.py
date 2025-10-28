@@ -290,13 +290,14 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
         logger.warning("Shutdown signal received. Stopping collector...")
         stop_event.set()
 
-    # Register signal handlers (may be limited on Windows/asyncio)
+    # Register signal handlers (may be limited on Windows/asyncio or when running in threads)
     try:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _graceful_shutdown)
-    except NotImplementedError:
+    except (NotImplementedError, ValueError, RuntimeError):
         # Windows may not support add_signal_handler for SIGINT in Proactor
+        # ValueError/RuntimeError raised when not in main thread (orchestrator runs collector in thread)
         pass
 
     backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
