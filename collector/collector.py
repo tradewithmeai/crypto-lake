@@ -270,7 +270,7 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
     """
     Run the streaming collector with auto-reconnect and graceful shutdown (Ctrl+C).
     """
-    setup_logging("collector", config)
+    setup_logging()
     ex_conf = get_exchange_config(config, exchange_name)
 
     if symbols is None or not symbols:
