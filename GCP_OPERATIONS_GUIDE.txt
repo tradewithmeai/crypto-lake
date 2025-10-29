@@ -1,0 +1,589 @@
+# Crypto Lake GCP Operations Guide
+
+================================================================================
+ESSENTIAL COMMAND REFERENCE
+================================================================================
+
+Project Details:
+- Project ID: serious-conduit-476419-q7
+- VM: crypto-lake-vm (Debian 12, europe-west1-b)
+- Orchestrator: tools/orchestrator.py
+- Repo: tradewithmeai/crypto-lake
+- Log file: logs/qa/crypto-lake.log
+
+================================================================================
+A. VM STATE & CONNECTIVITY VERIFICATION
+================================================================================
+
+# Check VM status from local machine
+gcloud compute instances describe crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --format="value(status,networkInterfaces[0].accessConfigs[0].natIP)"
+
+# Test SSH connectivity
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="echo 'SSH connection successful' && uptime"
+
+# Check disk usage and available space
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="df -h /data && free -m"
+
+================================================================================
+B. CHECK ORCHESTRATOR PROCESS
+================================================================================
+
+# Check if orchestrator is running
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="ps aux | grep -E 'python.*orchestrator' | grep -v grep"
+
+# Check systemd service status (if configured)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="sudo systemctl status crypto-lake 2>/dev/null || echo 'systemd service not configured'"
+
+# Check process uptime and resource usage
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="ps -eo pid,etime,cmd | grep orchestrator | grep -v grep"
+
+================================================================================
+C. RESTART ORCHESTRATOR PROCESS
+================================================================================
+
+# Method 1: Using systemd (if configured)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="sudo systemctl restart crypto-lake && sleep 2 && sudo systemctl status crypto-lake"
+
+# Method 2: Manual kill and restart
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    pkill -f 'python.*orchestrator' || true
+    sleep 3
+    cd ~/crypto-lake
+    nohup python3 -m tools.orchestrator > logs/orchestrator-stdout.log 2>&1 &
+    sleep 2
+    ps aux | grep orchestrator | grep -v grep
+"
+
+# Method 3: Clean restart with log rotation
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    pkill -f 'python.*orchestrator' || true
+    sleep 3
+    cd ~/crypto-lake
+    mv logs/qa/crypto-lake.log logs/qa/crypto-lake.log.\$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+    nohup python3 -m tools.orchestrator > logs/orchestrator-stdout.log 2>&1 &
+    echo 'Orchestrator restarted. Checking...'
+    sleep 3
+    ps aux | grep orchestrator | grep -v grep && echo 'Process running' || echo 'FAILED TO START'
+"
+
+================================================================================
+D. TAIL LOGS & CONFIRM DATA COLLECTION
+================================================================================
+
+# Tail main application log (real-time)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="tail -f ~/crypto-lake/logs/qa/crypto-lake.log"
+
+# View last 50 lines with timestamps
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="tail -n 50 ~/crypto-lake/logs/qa/crypto-lake.log"
+
+# Check for errors in recent logs
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="tail -n 200 ~/crypto-lake/logs/qa/crypto-lake.log | grep -iE 'error|exception|failed|critical' || echo 'No errors found'"
+
+# Verify data collection (check recent files)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    echo '=== Raw Data (last 5 files) ==='
+    find /data/raw -type f -name '*.jsonl' -mmin -30 | head -5
+    echo ''
+    echo '=== Parquet Data (last modified) ==='
+    find /data/parquet -type f -name '*.parquet' -mtime -1 | head -5
+    echo ''
+    echo '=== Recent file sizes ==='
+    du -sh /data/raw/* 2>/dev/null | tail -3
+"
+
+# Monitor collector WebSocket connections
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="tail -n 100 ~/crypto-lake/logs/qa/crypto-lake.log | grep -E 'Connected to wss|WebSocket|trade|quote' | tail -10"
+
+================================================================================
+E. RELOAD ENVIRONMENT VARIABLES
+================================================================================
+
+# Check current environment variables (safely, without exposing secrets)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    echo '=== Environment Variables Status ==='
+    env | grep -E '^(GCS_BUCKET|GCP_PROJECT|GCP_REGION|CRYPTO_DB|LOG_LEVEL)=' | sed 's/=.*/=***/' || echo 'No GCP env vars set'
+    echo ''
+    echo '=== Checking .bashrc / .profile ==='
+    grep -E 'export (GCS|GCP|CRYPTO)' ~/.bashrc ~/.profile 2>/dev/null || echo 'Not in shell config'
+"
+
+# Set environment variables for current session + persistence
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    # Add to .bashrc for persistence
+    grep -q 'GCS_BUCKET_NAME' ~/.bashrc || echo 'export GCS_BUCKET_NAME=your-bucket-name' >> ~/.bashrc
+    grep -q 'GCP_PROJECT_ID' ~/.bashrc || echo 'export GCP_PROJECT_ID=serious-conduit-476419-q7' >> ~/.bashrc
+    grep -q 'GCP_REGION' ~/.bashrc || echo 'export GCP_REGION=europe-west1' >> ~/.bashrc
+
+    # Reload for current session
+    source ~/.bashrc
+
+    echo 'Environment variables updated. Restart orchestrator to apply.'
+"
+
+# Apply env vars to systemd service (if using systemd)
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    sudo mkdir -p /etc/systemd/system/crypto-lake.service.d
+    sudo tee /etc/systemd/system/crypto-lake.service.d/env.conf > /dev/null <<EOF
+[Service]
+Environment=\"GCS_BUCKET_NAME=your-bucket-name\"
+Environment=\"GCP_PROJECT_ID=serious-conduit-476419-q7\"
+Environment=\"GCP_REGION=europe-west1\"
+Environment=\"LOG_LEVEL=INFO\"
+EOF
+    sudo systemctl daemon-reload
+    echo 'Systemd env vars updated. Restart service to apply.'
+"
+
+================================================================================
+F. GRACEFUL REBOOT OR RESTART
+================================================================================
+
+# Soft restart: Stop orchestrator, wait, start
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    echo 'Stopping orchestrator...'
+    pkill -f 'python.*orchestrator' || true
+    sleep 5
+    echo 'Starting orchestrator...'
+    cd ~/crypto-lake
+    nohup python3 -m tools.orchestrator > logs/orchestrator-stdout.log 2>&1 &
+    sleep 3
+    ps aux | grep orchestrator | grep -v grep && echo 'SUCCESS: Orchestrator restarted' || echo 'ERROR: Failed to restart'
+"
+
+# Reboot VM (requires confirmation)
+# WARNING: This will disconnect all processes
+gcloud compute instances stop crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+
+# Wait 10 seconds
+sleep 10
+
+gcloud compute instances start crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+
+# After reboot, verify orchestrator auto-starts (if systemd configured)
+sleep 30
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="sudo systemctl status crypto-lake || (cd ~/crypto-lake && nohup python3 -m tools.orchestrator > logs/orchestrator-stdout.log 2>&1 &)"
+
+================================================================================
+G. QUICK HEALTH CHECK (ALL-IN-ONE)
+================================================================================
+
+# Comprehensive health check
+gcloud compute ssh crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7 \
+  --command="
+    echo '=== VM Health Check ==='
+    echo 'Uptime:' \$(uptime -p)
+    echo ''
+    echo '=== Disk Usage ==='
+    df -h /data | tail -1
+    echo ''
+    echo '=== Memory ==='
+    free -h | grep Mem
+    echo ''
+    echo '=== Orchestrator Process ==='
+    ps aux | grep orchestrator | grep -v grep || echo 'NOT RUNNING'
+    echo ''
+    echo '=== Recent Log Activity ==='
+    stat -c '%y %n' ~/crypto-lake/logs/qa/crypto-lake.log 2>/dev/null || echo 'No log file'
+    echo ''
+    echo '=== Last 3 Log Lines ==='
+    tail -n 3 ~/crypto-lake/logs/qa/crypto-lake.log 2>/dev/null || echo 'No logs'
+    echo ''
+    echo '=== Data Collection (files modified in last hour) ==='
+    find /data/raw -type f -mmin -60 | wc -l
+"
+
+================================================================================
+CLAUDE CODE AUTONOMOUS CAPABILITIES
+================================================================================
+
+✅ CAN EXECUTE WITHOUT APPROVAL (READ-ONLY)
+--------------------------------------------------------------------------------
+Action                      | Command Pattern                    | Safety Level
+--------------------------------------------------------------------------------
+VM Status Check             | gcloud compute instances describe  | SAFE
+SSH Connectivity Test       | gcloud compute ssh --command="..." | SAFE
+Read Logs                   | tail -n N logs/...                 | SAFE
+Process Status              | ps aux | grep orchestrator         | SAFE
+Disk Usage                  | df -h                              | SAFE
+Search Logs for Errors      | grep -E 'error|exception'          | SAFE
+List Recent Data Files      | find /data -type f -mtime -1       | SAFE
+Environment Variable Check  | env | grep CRYPTO (masked)         | SAFE
+Network Connectivity        | curl -I api.binance.com            | SAFE
+
+AUTOMATION POLICY: Claude Code can run these anytime to diagnose issues
+without asking permission.
+
+⚠️ REQUIRES USER CONFIRMATION (STATE-CHANGING)
+--------------------------------------------------------------------------------
+Action                      | Command Pattern              | Risk   | Reason
+--------------------------------------------------------------------------------
+Restart Orchestrator        | pkill && nohup python...     | MEDIUM | Interrupts collection
+systemd Restart             | sudo systemctl restart       | MEDIUM | Service disruption
+VM Stop                     | gcloud compute instances stop| HIGH   | Complete outage
+VM Start                    | gcloud compute instances start| MEDIUM| Requires stop first
+Log Rotation                | mv logs/...                  | LOW    | Loses real-time tail
+Install Dependencies        | pip3 install -r requirements | MEDIUM | Could break compat
+Code Deployment             | git pull && pip install      | HIGH   | Unvalidated code
+Config Changes              | Edit config.yml              | HIGH   | Could misconfigure
+Environment Var Writes      | echo 'export...' >> .bashrc  | MEDIUM | Persists across reboots
+
+AUTOMATION POLICY: Claude Code MUST ask "Execute [action]? (yes/no)" and
+wait for user confirmation.
+
+🚫 NEVER AUTONOMOUS (MANUAL ONLY)
+--------------------------------------------------------------------------------
+Action                      | Why Manual                    | Alternative
+--------------------------------------------------------------------------------
+VM Deletion                 | Irreversible data loss        | User via Console
+Firewall Changes            | Security risk                 | User via Console
+IAM Policy Changes          | Permission escalation risk    | User via Console
+Database Migrations         | Schema changes, data loss risk| User reviews SQL first
+Secret Rotation             | Authentication breakage       | User updates all services
+Budget/Quota Changes        | Cost impact                   | User via Console
+
+================================================================================
+GCP SDK INTEGRATION RECOMMENDATIONS
+================================================================================
+
+A. SAFE AUTOMATION FRAMEWORK
+--------------------------------------------------------------------------------
+
+Level 1: Monitoring & Diagnostics (Auto-Approved)
+--------------------------------------------------
+Claude Code can run these without asking:
+- gcloud compute instances describe {vm}
+- gcloud compute ssh {vm} --command='tail -n 100 logs/qa/crypto-lake.log'
+- gcloud compute ssh {vm} --command='ps aux | grep orchestrator'
+- gcloud logging read 'resource.type=gce_instance' --limit=50
+
+Implementation:
+- Claude Code detects these patterns and executes immediately
+- Results displayed to user for review
+- No state changes, 100% safe
+
+Level 2: Service Management (User Approval Required)
+-----------------------------------------------------
+Claude Code MUST ask first:
+- restart orchestrator
+- stop VM
+- start VM
+- deploy code
+- install dependencies
+
+Workflow:
+1. Claude detects issue: "Orchestrator not responding"
+2. Claude asks: "Restart orchestrator? (yes/no)"
+3. User confirms: "yes"
+4. Claude executes restart command
+5. Claude validates: Check logs for startup success
+
+Implementation:
+- Use pre-approved command templates
+- User types "yes" or "no" in chat
+- Claude executes only on explicit confirmation
+- Post-execution validation (check process running, logs healthy)
+
+Level 3: Deployment Automation (Multi-Step with Rollback)
+----------------------------------------------------------
+Claude proposes this workflow, executes only if approved:
+
+1. Pre-deployment check
+gcloud compute ssh crypto-lake-vm --command="
+  cd ~/crypto-lake
+  git fetch origin
+  git diff main origin/main --stat
+"
+
+2. Claude asks: "Deploy 3 commits from origin/main? (yes/no/diff)"
+   If "diff": Show full diff
+   If "yes": Execute deployment
+
+3. Backup current state
+gcloud compute ssh crypto-lake-vm --command="
+  cd ~/crypto-lake
+  git rev-parse HEAD > .last-deploy
+  cp logs/qa/crypto-lake.log logs/qa/pre-deploy.log
+"
+
+4. Deploy
+gcloud compute ssh crypto-lake-vm --command="
+  cd ~/crypto-lake
+  git pull origin main
+  pip3 install -r requirements.txt
+  sudo systemctl restart crypto-lake
+"
+
+5. Validation (30 seconds)
+sleep 30
+gcloud compute ssh crypto-lake-vm --command="
+  ps aux | grep orchestrator | grep -v grep &&
+  tail -n 20 logs/qa/crypto-lake.log | grep -i error || echo 'Deployment successful'
+"
+
+6. If validation fails: Rollback
+gcloud compute ssh crypto-lake-vm --command="
+  git reset --hard \$(cat .last-deploy)
+  sudo systemctl restart crypto-lake
+"
+
+Implementation:
+- Claude presents full plan first
+- User approves entire workflow or rejects
+- Claude executes steps sequentially with validation
+- Automatic rollback if validation fails
+
+B. RECOMMENDED TOOL SETUP
+--------------------------------------------------------------------------------
+
+1. Create Command Wrapper Script (On VM)
+-----------------------------------------
+File: ~/crypto-lake/ops/claude-commands.sh
+
+#!/bin/bash
+# Safe command wrapper for Claude Code automation
+
+case "$1" in
+  health)
+    echo "=== Health Check ==="
+    ps aux | grep orchestrator | grep -v grep || echo "Orchestrator NOT running"
+    tail -n 5 ~/crypto-lake/logs/qa/crypto-lake.log
+    df -h /data | tail -1
+    ;;
+  restart)
+    echo "Restarting orchestrator..."
+    pkill -f 'python.*orchestrator'
+    sleep 3
+    cd ~/crypto-lake
+    nohup python3 -m tools.orchestrator > logs/orchestrator-stdout.log 2>&1 &
+    sleep 2
+    ps aux | grep orchestrator | grep -v grep && echo "SUCCESS" || echo "FAILED"
+    ;;
+  logs)
+    tail -f ~/crypto-lake/logs/qa/crypto-lake.log
+    ;;
+  *)
+    echo "Usage: $0 {health|restart|logs}"
+    exit 1
+    ;;
+esac
+
+Usage by Claude:
+# Health check
+gcloud compute ssh crypto-lake-vm --zone=europe-west1-b --project=serious-conduit-476419-q7 \
+  --command="~/crypto-lake/ops/claude-commands.sh health"
+
+# Restart (after user approval)
+gcloud compute ssh crypto-lake-vm --zone=europe-west1-b --project=serious-conduit-476419-q7 \
+  --command="~/crypto-lake/ops/claude-commands.sh restart"
+
+2. Enable Cloud Logging Integration
+------------------------------------
+# Claude can read structured logs from Cloud Logging
+gcloud logging read "
+  resource.type=gce_instance AND
+  resource.labels.instance_id=crypto-lake-vm AND
+  severity>=ERROR
+" --limit=50 --format=json --project=serious-conduit-476419-q7
+
+Useful queries:
+- Last 50 errors
+- NetworkTimeoutWarning count
+- Orchestrator startup events
+
+Benefit: Claude can analyze logs without SSH access.
+
+3. Set Up Monitoring Metrics
+-----------------------------
+# Create custom metric for orchestrator health
+gcloud monitoring metrics-descriptors create \
+  custom.googleapis.com/crypto_lake/orchestrator_running \
+  --type=gauge \
+  --value-type=bool \
+  --description="Whether orchestrator process is running"
+
+# Claude can query this metric
+gcloud monitoring time-series list \
+  --filter='metric.type="custom.googleapis.com/crypto_lake/orchestrator_running"' \
+  --format=json
+
+Benefit: Claude can detect issues before user reports them.
+
+C. APPROVAL WORKFLOW DESIGN
+--------------------------------------------------------------------------------
+
+Proposed Chat Interface:
+------------------------
+User: "The logs show NetworkTimeoutWarning. What should I do?"
+
+Claude: [Analyzes logs via gcloud compute ssh --command="tail -n 200 logs/qa/crypto-lake.log"]
+
+Claude: "I found 15 NetworkTimeoutWarning entries in the last 5 minutes.
+The orchestrator appears hung (no new log entries for 3 minutes).
+
+Recommended action: Restart orchestrator
+
+Execute restart? (yes/no)"
+
+User: "yes"
+
+Claude: [Executes restart command]
+Claude: [Waits 5 seconds]
+Claude: [Validates process running + checks logs]
+
+Claude: "✓ Orchestrator restarted successfully. Process PID 12345 running.
+Latest log entry: 'Connected to Binance WebSocket' (2 seconds ago)"
+
+Safety Rules:
+-------------
+1. All destructive actions require explicit "yes" (not "ok", "sure", "go ahead")
+2. Claude must explain what will happen before asking
+3. Claude must validate success after execution
+4. If validation fails, Claude must alert user and propose rollback
+5. User can abort anytime with "cancel" or "stop"
+
+D. INTEGRATION CHECKLIST
+--------------------------------------------------------------------------------
+[ ] Install gcloud SDK on local machine (where Claude Code runs)
+[ ] Authenticate gcloud: gcloud auth login
+[ ] Set default project: gcloud config set project serious-conduit-476419-q7
+[ ] Test SSH: gcloud compute ssh crypto-lake-vm --zone=europe-west1-b --command="echo test"
+[ ] Create ops script on VM: Deploy ~/crypto-lake/ops/claude-commands.sh
+[ ] Configure Claude Code permissions: Allow gcloud and ssh commands
+[ ] Define approval patterns: Create list of safe vs. approval-required commands
+[ ] Set up monitoring alerts: Email/Slack for errors → Claude can proactively diagnose
+[ ] Test rollback procedure: Ensure Claude can revert bad deployments
+
+================================================================================
+EXAMPLE OPERATIONAL SCENARIOS
+================================================================================
+
+SCENARIO 1: User Reports "Logs Stopped"
+--------------------------------------------------------------------------------
+Claude's Workflow:
+1. ✅ Auto-execute: Check orchestrator process status
+2. ✅ Auto-execute: Read last 50 log lines
+3. Diagnosis: "Orchestrator crashed 10 minutes ago (OutOfMemoryError)"
+4. ⚠️ Ask: "Restart orchestrator? (yes/no)"
+5. User confirms: "yes"
+6. Execute restart command
+7. ✅ Auto-validate: Process running + logs active
+8. Report: "✓ Orchestrator restarted. Memory usage: 1.2GB / 4GB available"
+
+SCENARIO 2: Scheduled Deployment
+--------------------------------------------------------------------------------
+Claude's Workflow:
+1. User: "Deploy latest main branch"
+2. ✅ Auto-execute: Fetch git changes and show diff
+3. ⚠️ Ask: "Deploy 5 commits (feat/gcs-sync, fix/logging)? This will restart
+   the orchestrator. (yes/no/show-diff)"
+4. User: "show-diff" → Claude shows full diff
+5. User: "yes"
+6. Execute: Backup → Pull → Install deps → Restart → Validate
+7. ✅ Auto-validate: Check logs for 30 seconds
+8. Report: "✓ Deployment successful. No errors in startup logs."
+
+SCENARIO 3: Proactive Monitoring
+--------------------------------------------------------------------------------
+Claude's Workflow (Autonomous):
+1. Every 5 minutes: Check health (process + recent logs)
+2. Detect: No new log entries for 10 minutes
+3. Alert user: "⚠️ Orchestrator may be hung (no logs for 10 min). Investigate?"
+4. User: "yes"
+5. ✅ Auto-diagnose: Read full logs, check process status, check network
+6. Report: "WebSocket disconnected 10 minutes ago. Reconnect attempts failing
+   (NetworkTimeoutWarning). Restart recommended."
+7. ⚠️ Ask: "Restart orchestrator? (yes/no)"
+
+================================================================================
+SUMMARY
+================================================================================
+
+Claude Code can safely:
+- Monitor VM health, logs, and processes
+- Diagnose issues by reading logs and status
+- Propose solutions with clear explanations
+
+Claude Code requires approval for:
+- Restarting services
+- Deploying code
+- Changing configuration
+- VM stop/start operations
+
+User retains full control over:
+- Infrastructure changes (VM deletion, IAM)
+- Database migrations
+- Secret/credential updates
+- Cost-impacting decisions
+
+Next Steps:
+1. Test all commands above on your VM
+2. Create ops/claude-commands.sh wrapper for common operations
+3. Configure approval patterns for Claude Code
+4. Set up monitoring alerts for proactive issue detection
+
+================================================================================
+END OF OPERATIONS GUIDE
+================================================================================
