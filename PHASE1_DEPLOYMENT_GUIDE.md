@@ -16,8 +16,87 @@ Before starting Phase 1 deployment:
   - PR #5: dockerfile-entrypoint
   - PR #6: qa-nonblocking-optimization
 - [ ] GCP VM accessible via SSH
-- [ ] Service account credentials available for GCS access
+- [ ] **VM OAuth scopes configured correctly for GCS access** (see Step 0 below)
 - [ ] GCS bucket created (e.g., `crypto-lake-data`)
+
+**IMPORTANT:** Before proceeding, verify your VM has the required OAuth scopes. Without these, GCS uploads will fail with 403 errors even if IAM permissions are correct.
+
+---
+
+## Step 0: Verify and Fix VM OAuth Scopes (10 minutes)
+
+**Why This Step Is Critical:**
+GCP VMs require both IAM permissions AND OAuth scopes for GCS access. Even if your service account has `storage.admin` role, the VM's OAuth scopes must include `storage-rw` or `cloud-platform`.
+
+### Verify Current Scopes
+
+```bash
+# Check VM's current OAuth scopes
+gcloud compute instances describe crypto-lake-vm \
+  --zone=europe-west1-b \
+  --format="value(serviceAccounts[0].scopes)"
+
+# Should include one of:
+#   - https://www.googleapis.com/auth/devstorage.read_write (storage-rw)
+#   - https://www.googleapis.com/auth/cloud-platform (cloud-platform)
+```
+
+### If Scopes Are Missing or Incorrect
+
+**Option 1: Automated Fix (Recommended)**
+```bash
+# Clone repo locally (if not already done)
+git clone https://github.com/Eschaton31/crypto-lake.git
+cd crypto-lake
+
+# Run the fix script
+bash tools/fix_vm_scopes.sh
+
+# This will:
+#   1. Stop the VM
+#   2. Update OAuth scopes to: storage-rw,logging-write,monitoring-write
+#   3. Restart the VM
+#   4. Verify scopes were applied
+```
+
+**Option 2: Manual Fix**
+```bash
+# Stop VM
+gcloud compute instances stop crypto-lake-vm --zone=europe-west1-b
+
+# Update scopes
+gcloud compute instances set-service-account crypto-lake-vm \
+  --zone=europe-west1-b \
+  --scopes=storage-rw,logging-write,monitoring-write
+
+# Start VM
+gcloud compute instances start crypto-lake-vm --zone=europe-west1-b
+
+# Wait 30-60 seconds for VM to start, then verify
+gcloud compute instances describe crypto-lake-vm \
+  --zone=europe-west1-b \
+  --format="value(serviceAccounts[0].scopes)" | grep -E "storage-rw|cloud-platform"
+```
+
+**Verification:**
+After applying the fix, you should see output containing:
+```
+https://www.googleapis.com/auth/devstorage.read_write
+https://www.googleapis.com/auth/logging.write
+https://www.googleapis.com/auth/monitoring.write
+```
+
+### If Creating a New VM
+
+When creating a new VM, include scopes from the start:
+```bash
+gcloud compute instances create crypto-lake-vm \
+  --zone=europe-west1-b \
+  --machine-type=e2-medium \
+  --scopes=storage-rw,logging-write,monitoring-write \
+  --boot-disk-size=100GB \
+  ...
+```
 
 ---
 
@@ -92,13 +171,29 @@ gsutil mb -l europe-west1 gs://crypto-lake-data/
 gsutil ls gs://crypto-lake-data/  # Verify
 ```
 
-### 4B. Set Up Service Account
+### 4B. Verify Service Account Authentication
+
+**Using VM's Default Compute Service Account (Recommended)**
+
+Since we configured OAuth scopes in Step 0, the VM will automatically authenticate to GCS using its default compute service account. No manual credentials or key files are needed.
 
 ```bash
-# Option 1: Use Application Default Credentials (if available)
-gcloud auth application-default login
+# Verify GCS authentication works
+gsutil ls gs://crypto-lake-data/
 
-# Option 2: Use Service Account Key (recommended for production)
+# Expected: Empty bucket or existing files (no auth errors)
+
+# If you get auth errors, re-check Step 0
+gcloud compute instances describe crypto-lake-vm \
+  --zone=europe-west1-b \
+  --format="value(serviceAccounts[0].scopes)" | grep -E "storage-rw|cloud-platform"
+```
+
+**Alternative: Manual Service Account Key (Not Recommended)**
+
+Only use this if you need a different service account than the VM's default:
+
+```bash
 # Download key from GCP Console → IAM → Service Accounts
 # Upload to VM:
 # gcloud compute scp /local/path/to/service-account-key.json crypto-lake-vm:~/crypto-lake/ --zone=europe-west1-b
@@ -109,6 +204,8 @@ export GOOGLE_APPLICATION_CREDENTIALS="/home/Eschaton/crypto-lake/service-accoun
 # Add to /etc/default/crypto-lake for systemd
 echo 'GOOGLE_APPLICATION_CREDENTIALS="/home/Eschaton/crypto-lake/service-account-key.json"' | sudo tee -a /etc/default/crypto-lake
 ```
+
+**Security Note:** Using the VM's default service account with OAuth scopes is more secure than managing static key files. No credentials are stored on disk.
 
 ### 4C. Update config.yml
 
@@ -342,13 +439,15 @@ ls -lt /data/raw/binance/SOLUSDT/$(date -u +%Y-%m-%d)/ | head -5
 
 ### Phase 1C: GCS Upload ✅
 - [ ] google-cloud-storage installed
-- [ ] Service account configured
+- [ ] VM OAuth scopes include storage-rw (verified in Step 0)
+- [ ] Service account authentication working (no manual key files needed)
 - [ ] config.yml updated with bucket name
 - [ ] gcs_uploader.py tested in dry-run mode
 - [ ] Manual upload run successful
 - [ ] Files visible in GCS bucket
 - [ ] Cron job scheduled (03:00 UTC)
 - [ ] gcs-upload.log created and clean
+- [ ] No 403 scope errors in logs
 
 ### System Health ✅
 - [ ] Orchestrator running (systemd status active)
@@ -429,24 +528,61 @@ ls -lt /data/raw/binance/SOLUSDT/*/part*.jsonl | tail -20
 
 ### Issue: GCS Upload Fails with Auth Error
 
-**Symptoms:** gcs-upload.log shows "Failed to connect to GCS: Unauthorized"
+**Symptoms:** gcs-upload.log shows one of:
+- "403 Provided scope(s) are not authorized"
+- "Failed to connect to GCS: Unauthorized"
+- "GCS AUTHORIZATION ERROR: Insufficient OAuth Scopes"
+
+**Root Cause:** VM lacks required OAuth scopes for GCS write operations
 
 **Solution:**
+
+**Step 1: Verify the issue is scope-related**
 ```bash
-# Check GOOGLE_APPLICATION_CREDENTIALS is set
-echo $GOOGLE_APPLICATION_CREDENTIALS
+# Check error logs for scope errors
+grep -i "scope\|403\|Forbidden" /data/logs/qa/gcs-upload.log
 
-# Verify service account key file exists
-ls -lh ~/crypto-lake/service-account-key.json
-
-# Test auth manually
-gcloud auth activate-service-account --key-file=~/crypto-lake/service-account-key.json
-
-# Verify bucket access
-gsutil ls gs://crypto-lake-data/
-
-# Check service account has Storage Object Admin role
+# Check VM's current OAuth scopes
+gcloud compute instances describe crypto-lake-vm \
+  --zone=europe-west1-b \
+  --format="value(serviceAccounts[0].scopes)"
 ```
+
+**Step 2: Fix OAuth scopes**
+```bash
+# Option 1: Use automated fix script (recommended)
+# Run this from your LOCAL machine (not the VM)
+cd ~/crypto-lake  # Or wherever you cloned the repo
+bash tools/fix_vm_scopes.sh
+
+# Option 2: Manual fix
+gcloud compute instances stop crypto-lake-vm --zone=europe-west1-b
+gcloud compute instances set-service-account crypto-lake-vm \
+  --zone=europe-west1-b \
+  --scopes=storage-rw,logging-write,monitoring-write
+gcloud compute instances start crypto-lake-vm --zone=europe-west1-b
+```
+
+**Step 3: Verify the fix**
+```bash
+# SSH back to VM
+gcloud compute ssh crypto-lake-vm --zone=europe-west1-b
+
+# Test GCS upload in dry-run mode
+cd ~/crypto-lake
+source venv/bin/activate
+python tools/gcs_uploader.py --dry-run
+
+# Expected: No scope errors, shows files that would be uploaded
+
+# Test actual upload
+python tools/gcs_uploader.py --force
+
+# Verify files uploaded to GCS
+gsutil ls -lh gs://crypto-lake-data/parquet/binance/SOLUSDT/ | head -10
+```
+
+**Note:** OAuth scopes are different from IAM permissions. Your service account may have `storage.admin` IAM role but still lack the OAuth scopes needed for the VM to use those permissions. See Step 0 for detailed explanation.
 
 ### Issue: Cron Jobs Not Running
 

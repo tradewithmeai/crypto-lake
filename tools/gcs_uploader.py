@@ -95,8 +95,33 @@ def upload_parquet_to_gcs(
             logger.info(f"Connected to GCS bucket: {bucket_name}")
 
     except GoogleCloudError as e:
-        logger.error(f"Failed to connect to GCS: {e}")
-        return {"error": str(e)}
+        error_msg = str(e)
+
+        # Check for scope-related errors
+        if "403" in error_msg or "Forbidden" in error_msg or "scope" in error_msg.lower():
+            logger.error("=" * 80)
+            logger.error("GCS AUTHORIZATION ERROR: Insufficient OAuth Scopes")
+            logger.error("=" * 80)
+            logger.error(f"Error: {error_msg}")
+            logger.error("")
+            logger.error("ROOT CAUSE: The VM's service account has correct IAM permissions")
+            logger.error("but lacks the required OAuth scopes for GCS write operations.")
+            logger.error("")
+            logger.error("SOLUTION: Update VM scopes to include 'storage-rw' or 'cloud-platform'")
+            logger.error("")
+            logger.error("To fix this issue, run the following commands:")
+            logger.error("  1. gcloud compute instances stop crypto-lake-vm --zone=europe-west1-b")
+            logger.error("  2. gcloud compute instances set-service-account crypto-lake-vm \\")
+            logger.error("       --zone=europe-west1-b \\")
+            logger.error("       --scopes=storage-rw,logging-write,monitoring-write")
+            logger.error("  3. gcloud compute instances start crypto-lake-vm --zone=europe-west1-b")
+            logger.error("")
+            logger.error("Or use the convenience script: bash tools/fix_vm_scopes.sh")
+            logger.error("=" * 80)
+            return {"error": "Insufficient OAuth scopes - see logs for fix instructions"}
+        else:
+            logger.error(f"Failed to connect to GCS: {e}")
+            return {"error": str(e)}
     except Exception as e:
         logger.error(f"Failed to initialize GCS client: {e}")
         return {"error": str(e)}
@@ -164,8 +189,21 @@ def upload_parquet_to_gcs(
                 error_count += 1
 
         except GoogleCloudError as e:
-            logger.error(f"GCS error uploading {local_path}: {e}")
-            error_count += 1
+            error_msg = str(e)
+
+            # Check for scope-related errors during upload
+            if "403" in error_msg or "Forbidden" in error_msg or "scope" in error_msg.lower():
+                logger.error(f"GCS SCOPE ERROR uploading {local_path}: {error_msg}")
+                logger.error("VM lacks 'storage-rw' OAuth scope. Run: bash tools/fix_vm_scopes.sh")
+                error_count += 1
+                # Stop trying if we hit scope errors
+                if error_count >= 3:
+                    logger.error("Multiple scope errors detected. Stopping upload.")
+                    logger.error("Fix VM scopes before retrying: see logs above for instructions")
+                    break
+            else:
+                logger.error(f"GCS error uploading {local_path}: {e}")
+                error_count += 1
         except Exception as e:
             logger.error(f"Failed to upload {local_path}: {e}")
             error_count += 1
