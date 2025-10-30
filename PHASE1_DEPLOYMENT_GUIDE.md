@@ -237,6 +237,9 @@ cat config.yml | grep -A 1 "^gcs:"
 ### 5A. Test Disk Cleanup (Dry Run)
 
 ```bash
+# Set log level to see output (scripts default to WARNING level for quiet operation)
+export LOG_LEVEL=INFO
+
 # Run in dry-run mode to see what would be deleted
 python -m tools.disk_cleanup --dry-run
 
@@ -253,6 +256,9 @@ echo $?  # Should be 0
 ### 5B. Test GCS Uploader (Dry Run)
 
 ```bash
+# Set log level to see output (scripts default to WARNING level for quiet operation)
+export LOG_LEVEL=INFO
+
 # Run in dry-run mode to see what would be uploaded
 python -m tools.gcs_uploader --dry-run
 
@@ -314,10 +320,10 @@ crontab -e
 0 * * * * /home/Eschaton/crypto-lake/venv/bin/python -m qa.orchestrator --mode hourly --config /home/Eschaton/crypto-lake/config.yml >> /data/logs/qa/cron-hourly.log 2>&1
 
 # Disk Cleanup - Daily (at 02:00 UTC)
-0 2 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.disk_cleanup >> /data/logs/qa/cleanup.log 2>&1
+0 2 * * * cd /home/Eschaton/crypto-lake && LOG_LEVEL=INFO /home/Eschaton/crypto-lake/venv/bin/python -m tools.disk_cleanup >> /data/logs/qa/cleanup.log 2>&1
 
 # GCS Upload - Daily (at 03:00 UTC)
-0 3 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.gcs_uploader >> /data/logs/qa/gcs-upload.log 2>&1
+0 3 * * * cd /home/Eschaton/crypto-lake && LOG_LEVEL=INFO /home/Eschaton/crypto-lake/venv/bin/python -m tools.gcs_uploader >> /data/logs/qa/gcs-upload.log 2>&1
 
 # Compactor - Daily (at 04:00 UTC, process yesterday's data)
 0 4 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/main.py --mode compact --date $(date -u -d 'yesterday' '+\%Y-\%m-\%d') >> /data/logs/qa/compact.log 2>&1
@@ -583,6 +589,27 @@ gsutil ls -lh gs://crypto-lake-data/parquet/binance/SOLUSDT/ | head -10
 ```
 
 **Note:** OAuth scopes are different from IAM permissions. Your service account may have `storage.admin` IAM role but still lack the OAuth scopes needed for the VM to use those permissions. See Step 0 for detailed explanation.
+
+### Issue: GCS File Count Discrepancy
+
+**Symptoms:** `gsutil ls -r` shows more items than files uploaded (e.g., 1188 items vs 1029 files)
+
+**Root Cause:** This is **normal GCS behavior**. GCS creates virtual directory markers for hierarchical paths.
+
+**Explanation:**
+```bash
+# Total items (files + directory markers)
+gsutil ls -r gs://crypto-lake-data/parquet/ | wc -l
+# Output: 1188 (includes 1029 files + 159 directory markers)
+
+# Actual Parquet files only
+gsutil ls -r "gs://crypto-lake-data/parquet/**/*.parquet" | wc -l
+# Output: 1029 (actual files uploaded)
+```
+
+GCS is a flat object store. When you create paths like `binance/ADAUSDT/year=2025/month=10/day=29/`, GCS creates virtual directory objects for each level (`binance/`, `ADAUSDT/`, `year=2025/`, etc.). The `gsutil ls -r` command counts both files and these directory markers.
+
+**Verification:** Count only `.parquet` files to see the actual file count, which should match the upload count.
 
 ### Issue: Cron Jobs Not Running
 
