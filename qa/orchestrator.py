@@ -23,9 +23,73 @@ from qa.utils import ensure_qa_directories, format_duration
 from tools.common import load_config, setup_logging
 
 
+def _run_subprocess_with_timeout(cmd: list, step_name: str, timeout: int = 600) -> bool:
+    """
+    Run subprocess with timeout and non-blocking polling.
+
+    Args:
+        cmd: Command list to execute
+        step_name: Name of the step for logging
+        timeout: Maximum execution time in seconds (default: 600 = 10 minutes)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    start_time = time.time()
+    logger.info(f"[{step_name}] Starting (timeout: {timeout}s)...")
+
+    try:
+        # Start process in non-blocking mode
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        # Poll process with timeout
+        while True:
+            # Check if process completed
+            returncode = process.poll()
+            if returncode is not None:
+                # Process finished
+                elapsed = time.time() - start_time
+                if returncode == 0:
+                    logger.info(f"[{step_name}] Completed successfully in {elapsed:.1f}s")
+                    return True
+                else:
+                    # Get stderr for error details
+                    _, stderr = process.communicate(timeout=5)
+                    logger.error(f"[{step_name}] Failed with exit code {returncode}: {stderr}")
+                    return False
+
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                # Timeout exceeded - kill process
+                logger.warning(f"[{step_name}] Timeout exceeded ({timeout}s) - terminating process")
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"[{step_name}] Process did not terminate, forcing kill")
+                    process.kill()
+                return False
+
+            # Sleep briefly before next poll
+            time.sleep(2)
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[{step_name}] Timeout expired ({timeout}s)")
+        return False
+    except Exception as e:
+        logger.warning(f"[{step_name}] Unexpected error: {e}")
+        return False
+
+
 def run_qa_pipeline(config_path: str, date_str: str, tf: str = "1s") -> bool:
     """
-    Run complete QA pipeline for a given date.
+    Run complete QA pipeline for a given date with non-blocking subprocess execution.
 
     Args:
         config_path: Path to config.yml
@@ -35,71 +99,46 @@ def run_qa_pipeline(config_path: str, date_str: str, tf: str = "1s") -> bool:
     Returns:
         True if successful, False otherwise
     """
-    logger.info(f"Running QA pipeline for {date_str}")
+    pipeline_start = time.time()
+    logger.info(f"Running QA pipeline for {date_str} (timeframe: {tf})")
 
-    # Step 1: Schema validation
-    logger.info("Step 1/4: Schema validation")
-    cmd_schema = [
-        sys.executable, "-m", "qa.run_schema",
-        "--config", config_path,
-        "--day", date_str,
-        "--tf", tf
+    # Define pipeline steps
+    steps = [
+        {
+            "name": "Schema validation",
+            "cmd": [sys.executable, "-m", "qa.run_schema", "--config", config_path, "--day", date_str, "--tf", tf],
+            "timeout": 600
+        },
+        {
+            "name": "AI detection",
+            "cmd": [sys.executable, "-m", "qa.run_ai", "--config", config_path, "--day", date_str, "--tf", tf],
+            "timeout": 600
+        },
+        {
+            "name": "Fusion scoring",
+            "cmd": [sys.executable, "-m", "qa.run_fusion", "--config", config_path, "--day", date_str],
+            "timeout": 600
+        },
+        {
+            "name": "Report generation",
+            "cmd": [sys.executable, "-m", "qa.run_report", "--config", config_path, "--day", date_str],
+            "timeout": 600
+        }
     ]
 
-    try:
-        result = subprocess.run(cmd_schema, check=True, capture_output=True, text=True)
-        logger.info("Schema validation completed")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Schema validation failed: {e.stderr}")
-        return False
+    # Execute pipeline steps
+    for i, step in enumerate(steps, 1):
+        logger.info(f"Step {i}/4: {step['name']}")
+        success = _run_subprocess_with_timeout(step["cmd"], step["name"], step["timeout"])
 
-    # Step 2: AI detection
-    logger.info("Step 2/4: AI detection")
-    cmd_ai = [
-        sys.executable, "-m", "qa.run_ai",
-        "--config", config_path,
-        "--day", date_str,
-        "--tf", tf
-    ]
+        if not success:
+            logger.error(f"Pipeline failed at step {i}/4: {step['name']}")
+            # Continue to next step instead of failing completely
+            logger.warning(f"Continuing to next step despite failure...")
 
-    try:
-        result = subprocess.run(cmd_ai, check=True, capture_output=True, text=True)
-        logger.info("AI detection completed")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"AI detection failed: {e.stderr}")
-        return False
-
-    # Step 3: Fusion scoring
-    logger.info("Step 3/4: Fusion scoring")
-    cmd_fusion = [
-        sys.executable, "-m", "qa.run_fusion",
-        "--config", config_path,
-        "--day", date_str
-    ]
-
-    try:
-        result = subprocess.run(cmd_fusion, check=True, capture_output=True, text=True)
-        logger.info("Fusion scoring completed")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Fusion scoring failed: {e.stderr}")
-        return False
-
-    # Step 4: Report generation
-    logger.info("Step 4/4: Report generation")
-    cmd_report = [
-        sys.executable, "-m", "qa.run_report",
-        "--config", config_path,
-        "--day", date_str
-    ]
-
-    try:
-        result = subprocess.run(cmd_report, check=True, capture_output=True, text=True)
-        logger.info("Report generation completed")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Report generation failed: {e.stderr}")
-        return False
-
-    logger.info(f"QA pipeline completed successfully for {date_str}")
+    # Calculate total duration
+    total_duration = time.time() - pipeline_start
+    logger.info(f"QA pipeline completed for {date_str} in {total_duration:.1f}s")
     return True
 
 

@@ -30,4 +30,5 @@ EXPOSE 8080
 
 # Default entrypoint: run orchestrator
 # Override with CMD in Cloud Run config for different modes
-ENTRYPOINT ["python", "-m", "tools.orchestrator"]
+ENTRYPOINT ["python", "main.py"]
+CMD ["--mode", "orchestrate"]
