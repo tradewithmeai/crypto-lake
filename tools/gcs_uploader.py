@@ -5,15 +5,15 @@ Uploads Parquet files to Google Cloud Storage for backup and durability.
 Designed for production use with cron scheduling.
 
 Usage:
-    python tools/gcs_uploader.py [--dry-run] [--force]
+    python -m tools.gcs_uploader [--dry-run] [--force]
 
 Prerequisites:
     - google-cloud-storage package installed
-    - Service account credentials configured (GOOGLE_APPLICATION_CREDENTIALS env var)
+    - VM OAuth scopes include storage-rw (see tools/fix_vm_scopes.sh)
     - GCS bucket name set in config.yml
 
 Cron Schedule:
-    0 3 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/tools/gcs_uploader.py >> /data/logs/qa/gcs-upload.log 2>&1
+    0 3 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.gcs_uploader >> /data/logs/qa/gcs-upload.log 2>&1
 """
 
 import argparse

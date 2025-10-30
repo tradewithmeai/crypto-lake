@@ -238,7 +238,7 @@ cat config.yml | grep -A 1 "^gcs:"
 
 ```bash
 # Run in dry-run mode to see what would be deleted
-python tools/disk_cleanup.py --dry-run
+python -m tools.disk_cleanup --dry-run
 
 # Expected output:
 # INFO | Cleanup starting: retention=7 days, cutoff=...
@@ -254,7 +254,7 @@ echo $?  # Should be 0
 
 ```bash
 # Run in dry-run mode to see what would be uploaded
-python tools/gcs_uploader.py --dry-run
+python -m tools.gcs_uploader --dry-run
 
 # Expected output:
 # INFO | GCS upload starting: bucket=crypto-lake-data, exclude_current_day=True, dry_run=True
@@ -314,10 +314,10 @@ crontab -e
 0 * * * * /home/Eschaton/crypto-lake/venv/bin/python -m qa.orchestrator --mode hourly --config /home/Eschaton/crypto-lake/config.yml >> /data/logs/qa/cron-hourly.log 2>&1
 
 # Disk Cleanup - Daily (at 02:00 UTC)
-0 2 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/tools/disk_cleanup.py >> /data/logs/qa/cleanup.log 2>&1
+0 2 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.disk_cleanup >> /data/logs/qa/cleanup.log 2>&1
 
 # GCS Upload - Daily (at 03:00 UTC)
-0 3 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/tools/gcs_uploader.py >> /data/logs/qa/gcs-upload.log 2>&1
+0 3 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.gcs_uploader >> /data/logs/qa/gcs-upload.log 2>&1
 
 # Compactor - Daily (at 04:00 UTC, process yesterday's data)
 0 4 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/main.py --mode compact --date $(date -u -d 'yesterday' '+\%Y-\%m-\%d') >> /data/logs/qa/compact.log 2>&1
@@ -360,7 +360,7 @@ ls -lh /data/reports/qa_$(date -u +%Y-%m-%d).md
 
 ```bash
 # Run cleanup manually to test
-python tools/disk_cleanup.py
+python -m tools.disk_cleanup
 
 # Check log output
 cat /data/logs/qa/cleanup.log
@@ -374,7 +374,7 @@ df -h /data
 
 ```bash
 # Run GCS upload manually to test
-python tools/gcs_uploader.py
+python -m tools.gcs_uploader
 
 # Check log output
 cat /data/logs/qa/gcs-upload.log
@@ -520,7 +520,7 @@ python -c "import duckdb; con = duckdb.connect(); print(con.execute(\"SELECT COU
 find /data/raw -name "*.jsonl" -mtime +7
 
 # Reduce retention days for testing
-python tools/disk_cleanup.py --retention-days 1 --dry-run
+python -m tools.disk_cleanup --retention-days 1 --dry-run
 
 # Check file modification times
 ls -lt /data/raw/binance/SOLUSDT/*/part*.jsonl | tail -20
@@ -571,12 +571,12 @@ gcloud compute ssh crypto-lake-vm --zone=europe-west1-b
 # Test GCS upload in dry-run mode
 cd ~/crypto-lake
 source venv/bin/activate
-python tools/gcs_uploader.py --dry-run
+python -m tools.gcs_uploader --dry-run
 
 # Expected: No scope errors, shows files that would be uploaded
 
 # Test actual upload
-python tools/gcs_uploader.py --force
+python -m tools.gcs_uploader --force
 
 # Verify files uploaded to GCS
 gsutil ls -lh gs://crypto-lake-data/parquet/binance/SOLUSDT/ | head -10

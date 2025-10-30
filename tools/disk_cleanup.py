@@ -5,10 +5,10 @@ Automatically removes old raw JSONL files to prevent disk space exhaustion.
 Designed for production use with cron scheduling.
 
 Usage:
-    python tools/disk_cleanup.py [--retention-days 7] [--dry-run]
+    python -m tools.disk_cleanup [--retention-days 7] [--dry-run]
 
 Cron Schedule:
-    0 2 * * * /home/Eschaton/crypto-lake/venv/bin/python /home/Eschaton/crypto-lake/tools/disk_cleanup.py >> /data/logs/qa/cleanup.log 2>&1
+    0 2 * * * cd /home/Eschaton/crypto-lake && /home/Eschaton/crypto-lake/venv/bin/python -m tools.disk_cleanup >> /data/logs/qa/cleanup.log 2>&1
 """
 
 import argparse
