@@ -169,6 +169,39 @@ def check_disk_usage(base_path: str) -> dict:
     return stats
 
 
+def get_adaptive_retention(usage_percent: float, default_retention: int) -> int:
+    """
+    Adjust retention period based on disk usage.
+
+    When disk space is tight, automatically reduce retention to free up space.
+
+    Args:
+        usage_percent: Current disk usage percentage (0-100)
+        default_retention: Default retention period in days
+
+    Returns:
+        int: Adjusted retention period in days
+    """
+    if usage_percent >= 95:
+        # Critical: Keep only 1 day
+        retention = 1
+        logger.warning(f"CRITICAL disk usage ({usage_percent:.1f}%) - reducing retention to {retention} day(s)")
+    elif usage_percent >= 90:
+        # Very high: Keep only 2 days
+        retention = 2
+        logger.warning(f"High disk usage ({usage_percent:.1f}%) - reducing retention to {retention} days")
+    elif usage_percent >= 80:
+        # High: Keep only 3 days
+        retention = 3
+        logger.warning(f"Elevated disk usage ({usage_percent:.1f}%) - reducing retention to {retention} days")
+    else:
+        # Normal: Use default
+        retention = default_retention
+        logger.info(f"Normal disk usage ({usage_percent:.1f}%) - using default retention of {retention} days")
+
+    return retention
+
+
 def main():
     parser = argparse.ArgumentParser(description="Disk cleanup for crypto-lake data")
     parser.add_argument(
@@ -187,6 +220,11 @@ def main():
         action="store_true",
         help="Show what would be deleted without actually deleting"
     )
+    parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable adaptive retention (use fixed retention even if disk is full)"
+    )
 
     args = parser.parse_args()
 
@@ -201,9 +239,16 @@ def main():
         logger.info("=== Disk Usage Before Cleanup ===")
         disk_before = check_disk_usage(base_path)
 
+        # Adjust retention based on disk usage (unless disabled)
+        retention_days = args.retention_days
+        if not args.no_adaptive:
+            retention_days = get_adaptive_retention(disk_before["usage_percent"], args.retention_days)
+        else:
+            logger.info(f"Adaptive retention disabled - using fixed {retention_days} days")
+
         # Run cleanup
         logger.info("=== Running Cleanup ===")
-        stats = cleanup_old_raw_files(base_path, args.retention_days, args.dry_run)
+        stats = cleanup_old_raw_files(base_path, retention_days, args.dry_run)
 
         # Check disk usage after cleanup
         if not args.dry_run:

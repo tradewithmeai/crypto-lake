@@ -16,10 +16,154 @@ Before starting Phase 1 deployment:
   - PR #5: dockerfile-entrypoint
   - PR #6: qa-nonblocking-optimization
 - [ ] GCP VM accessible via SSH
+- [ ] **Persistent disk attached and mounted to `/data`** (see Step -1 below)
 - [ ] **VM OAuth scopes configured correctly for GCS access** (see Step 0 below)
 - [ ] GCS bucket created (e.g., `crypto-lake-data`)
 
-**IMPORTANT:** Before proceeding, verify your VM has the required OAuth scopes. Without these, GCS uploads will fail with 403 errors even if IAM permissions are correct.
+**CRITICAL:** The `/data` directory MUST be on a separate persistent disk (minimum 50GB, recommended 100GB). Using the root filesystem will cause disk exhaustion and system failure within days.
+
+---
+
+## Step -1: Setup Persistent Disk for /data (30 minutes)
+
+**Why This Step Is Critical:**
+The crypto-lake system generates ~1-2GB of data per day per symbol. With 13 symbols, this means ~15-25GB/day. The default 20GB boot disk will fill up in less than 2 days. A dedicated persistent disk is **mandatory** for production use.
+
+### Check Current Setup
+
+```bash
+# Check if /data is a mount point
+mountpoint /data
+
+# If the above says "is not a mountpoint", you need to set up persistent disk
+df -h /data  # This will show root filesystem if not mounted separately
+```
+
+### Option 1: Automated Setup (Recommended)
+
+Run the automated setup script from your **local machine** (not the VM):
+
+```bash
+# Clone repo locally (if not already done)
+git clone https://github.com/tradewithmeai/crypto-lake.git
+cd crypto-lake
+
+# Run the setup script
+bash tools/setup_persistent_disk.sh
+
+# This will:
+#   1. Create a 100GB persistent disk
+#   2. Stop the VM
+#   3. Attach the disk
+#   4. Start the VM
+#   5. Format the disk as ext4
+#   6. Migrate existing /data contents
+#   7. Update /etc/fstab for auto-mount
+#   8. Restart crypto-lake service
+
+# Total time: ~5 minutes (including 1-2 min downtime)
+```
+
+### Option 2: Manual Setup
+
+If the automated script fails, follow these steps:
+
+1. **Create and attach disk** (from local machine):
+```bash
+# Create persistent disk
+gcloud compute disks create crypto-lake-data-disk \
+  --size=100GB \
+  --type=pd-standard \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+
+# Stop VM
+gcloud compute instances stop crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+
+# Attach disk
+gcloud compute instances attach-disk crypto-lake-vm \
+  --disk=crypto-lake-data-disk \
+  --device-name=crypto-data \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+
+# Start VM
+gcloud compute instances start crypto-lake-vm \
+  --zone=europe-west1-b \
+  --project=serious-conduit-476419-q7
+```
+
+2. **Format and mount** (SSH to VM):
+```bash
+# SSH to VM
+gcloud compute ssh crypto-lake-vm --zone=europe-west1-b
+
+# Find the new disk
+sudo lsblk
+
+# Format as ext4 (CAUTION: This erases the disk!)
+sudo mkfs.ext4 -F /dev/disk/by-id/google-crypto-data
+
+# Create temp mount point
+sudo mkdir -p /mnt/crypto-data-temp
+
+# Mount temporarily
+sudo mount /dev/disk/by-id/google-crypto-data /mnt/crypto-data-temp
+
+# Copy existing /data (if any)
+if [ -d "/data" ]; then
+  sudo rsync -av /data/ /mnt/crypto-data-temp/
+  sudo mv /data /data.old
+fi
+
+# Create new /data mount point
+sudo mkdir -p /data
+
+# Unmount temp
+sudo umount /mnt/crypto-data-temp
+
+# Get UUID
+UUID=$(sudo blkid -s UUID -o value /dev/disk/by-id/google-crypto-data)
+
+# Add to /etc/fstab
+echo "UUID=$UUID /data ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+
+# Mount from fstab
+sudo mount -a
+
+# Verify
+df -h /data
+
+# Set ownership
+sudo chown -R Eschaton:Eschaton /data
+
+# Restart service
+sudo systemctl restart crypto-lake
+```
+
+### Verification
+
+After setup, verify the disk is properly mounted:
+
+```bash
+# Run verification script (on VM)
+bash ~/crypto-lake/tools/verify_disk_setup.sh
+
+# Should show:
+# ✅ PASS: /data is a mount point
+# ✅ PASS: /data is on separate disk
+# ✅ PASS: Disk size is adequate
+# ✅ PASS: Sufficient space available
+```
+
+**Expected output:**
+```
+/dev/sdb      100G  1.5G   93G   2% /data
+```
+
+**If you see `/dev/sda`**, the disk is NOT properly mounted. Repeat the setup.
 
 ---
 

@@ -18,6 +18,79 @@ from loguru import logger
 from tools.common import ensure_dir, wait_for_parquet_files
 
 
+def check_disk_space(base_path: str) -> Dict[str, Any]:
+    """
+    Check disk usage for the data directory and root filesystem.
+
+    Args:
+        base_path: Base path to data lake
+
+    Returns:
+        Dictionary with disk usage statistics for both /data and / (root)
+    """
+    try:
+        # Check /data disk usage
+        data_stat = os.statvfs(base_path)
+        data_total_bytes = data_stat.f_blocks * data_stat.f_frsize
+        data_free_bytes = data_stat.f_bfree * data_stat.f_frsize
+        data_used_bytes = data_total_bytes - data_free_bytes
+        data_usage_percent = (data_used_bytes / data_total_bytes) * 100 if data_total_bytes > 0 else 0
+
+        # Check root filesystem usage (for comparison)
+        root_stat = os.statvfs("/")
+        root_total_bytes = root_stat.f_blocks * root_stat.f_frsize
+        root_free_bytes = root_stat.f_bfree * root_stat.f_frsize
+        root_used_bytes = root_total_bytes - root_free_bytes
+        root_usage_percent = (root_used_bytes / root_total_bytes) * 100 if root_total_bytes > 0 else 0
+
+        # Determine alert level
+        alert_level = "ok"
+        alert_message = None
+
+        if data_usage_percent >= 95:
+            alert_level = "critical"
+            alert_message = f"/data disk critically full ({data_usage_percent:.1f}%) - immediate cleanup required!"
+        elif data_usage_percent >= 90:
+            alert_level = "warning"
+            alert_message = f"/data disk usage high ({data_usage_percent:.1f}%) - cleanup recommended"
+        elif data_usage_percent >= 80:
+            alert_level = "caution"
+            alert_message = f"/data disk usage elevated ({data_usage_percent:.1f}%)"
+
+        # Check if /data is on same filesystem as root (potential issue)
+        data_is_separate = data_stat.f_fsid != root_stat.f_fsid
+
+        return {
+            "data_total_gb": data_total_bytes / 1e9,
+            "data_used_gb": data_used_bytes / 1e9,
+            "data_free_gb": data_free_bytes / 1e9,
+            "data_usage_percent": data_usage_percent,
+            "root_total_gb": root_total_bytes / 1e9,
+            "root_used_gb": root_used_bytes / 1e9,
+            "root_free_gb": root_free_bytes / 1e9,
+            "root_usage_percent": root_usage_percent,
+            "data_is_separate_disk": data_is_separate,
+            "alert_level": alert_level,
+            "alert_message": alert_message
+        }
+
+    except Exception as e:
+        logger.warning(f"Failed to check disk space: {e}")
+        return {
+            "data_total_gb": 0,
+            "data_used_gb": 0,
+            "data_free_gb": 0,
+            "data_usage_percent": 0,
+            "root_total_gb": 0,
+            "root_used_gb": 0,
+            "root_free_gb": 0,
+            "root_usage_percent": 0,
+            "data_is_separate_disk": False,
+            "alert_level": "unknown",
+            "alert_message": "Failed to check disk space"
+        }
+
+
 def summarize_files(base_path: str, day_str: str) -> Dict[str, int]:
     """
     Summarize file counts and data volumes for a given day.
@@ -228,6 +301,12 @@ def _write_markdown_report(md_path: str, payload: Dict[str, Any]):
 
 ---
 
+## Disk Space
+
+{_format_disk_space_section(payload.get('disk', {}))}
+
+---
+
 ## Notes
 
 - Health metrics are updated every 60 seconds
@@ -272,3 +351,51 @@ def _format_macro_status_text(status: str, macro_data: Dict[str, Any]) -> str:
         return f"WARNING: The macro fetcher encountered an error: {macro_data.get('last_error', 'Unknown')}"
     else:
         return "Status unknown."
+
+
+def _format_disk_space_section(disk_data: Dict[str, Any]) -> str:
+    """Format disk space section for markdown report."""
+    if not disk_data:
+        return "Disk space information not available."
+
+    data_usage = disk_data.get('data_usage_percent', 0)
+    data_used = disk_data.get('data_used_gb', 0)
+    data_total = disk_data.get('data_total_gb', 0)
+    data_free = disk_data.get('data_free_gb', 0)
+
+    root_usage = disk_data.get('root_usage_percent', 0)
+    root_used = disk_data.get('root_used_gb', 0)
+    root_total = disk_data.get('root_total_gb', 0)
+
+    is_separate = disk_data.get('data_is_separate_disk', False)
+    alert_level = disk_data.get('alert_level', 'ok')
+    alert_message = disk_data.get('alert_message')
+
+    # Choose status icon based on alert level
+    if alert_level == "critical":
+        status_icon = "🔴 CRITICAL"
+    elif alert_level == "warning":
+        status_icon = "⚠️ WARNING"
+    elif alert_level == "caution":
+        status_icon = "⚡ CAUTION"
+    else:
+        status_icon = "✅ OK"
+
+    disk_type = "Separate persistent disk" if is_separate else "⚠️ Same as root filesystem"
+
+    output = f"""| Metric | Value |
+|--------|-------|
+| **Status** | {status_icon} |
+| **/data Mount** | {disk_type} |
+| **/data Usage** | {data_usage:.1f}% ({data_used:.1f} GB / {data_total:.1f} GB) |
+| **/data Free** | {data_free:.1f} GB |
+| **Root (/) Usage** | {root_usage:.1f}% ({root_used:.1f} GB / {root_total:.1f} GB) |
+"""
+
+    if alert_message:
+        output += f"\n**Alert:** {alert_message}\n"
+
+    if not is_separate:
+        output += "\n⚠️ **WARNING:** /data is not on a separate persistent disk! Run `tools/setup_persistent_disk.sh` to fix.\n"
+
+    return output
