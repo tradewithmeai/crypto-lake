@@ -29,8 +29,16 @@ Thumbs.db
 *.log
 
 # Data directories (local data lake - don't commit actual data)
-# Note: This is configured to point to D:/CryptoDataLake
-# which is outside the repo, so no data will be committed
+data/
+cloud_data/
+*.parquet
+*.jsonl
+
+# Environment and secrets
+.env
+.env.*
+config.yml
+!config.yml.example
 
 # Distribution
 dist/

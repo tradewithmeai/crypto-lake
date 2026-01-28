@@ -1,11 +1,18 @@
 ##############################################################################
-# Crypto Lake Configuration - Local Testing
+# Crypto Lake Configuration - Example
+# Copy this to config.yml and adjust paths for your environment
 ##############################################################################
 
 general:
   timezone: "UTC"
   log_level: "INFO"
-  base_path: "./data"  # Creates data/ folder in project directory
+  # Use relative path for portability, or absolute path for your system
+  # Examples:
+  #   "./data"                    - Relative (works anywhere)
+  #   "D:/CryptoDataLake"         - Windows absolute
+  #   "/home/user/crypto-lake"    - Linux absolute
+  #   "/data"                     - Cloud/container mount
+  base_path: "./data"
 
 exchanges:
   - name: "binance"
@@ -31,16 +38,17 @@ exchanges:
 collector:
   write_interval_sec: 60
   reconnect_backoff: 10
-  max_reconnect_backoff: 300      # Max backoff 5 minutes
-  reconnect_jitter: 0.5
+  max_reconnect_backoff: 300      # Max backoff in seconds (5 min)
+  reconnect_jitter: 0.5           # Random jitter factor (0-1)
   output_format: "jsonl"
 
 transformer:
   resample_interval_sec: 1
   parquet_compression: "snappy"
-  schedule_minutes: 60
+  schedule_minutes: 60  # Run transformer every 60 minutes in orchestrate mode (0 to disable)
 
 macro_minute:
+  # Macro/FX tickers (1-minute data from yfinance)
   tickers:
     - SPY          # S&P 500 ETF
     - QQQ          # NASDAQ 100 ETF
@@ -54,9 +62,9 @@ macro_minute:
     - USDJPY=X     # USD/JPY
     - USDCAD=X     # USD/CAD
     - USDCHF=X     # USD/CHF
-  schedule_minutes: 15
-  startup_backfill_days: 7
-  runtime_lookback_days: 1
+  schedule_minutes: 15            # Fetch macro data every 15 minutes
+  startup_backfill_days: 7        # One-time backfill on startup
+  runtime_lookback_days: 1        # Fetch last 1 day on each scheduled run
 
 qa:
   enable_ai: true
@@ -90,12 +98,17 @@ testing:
   macro_lookback_startup_days: 1
   macro_runtime_lookback_days: 1
   backfill_days: 3
-  base_path: "./data/test"
+  base_path: "./data/test"  # Isolated test directory
 
-# GCS/GCP not needed for local testing
+# Optional: SQL database configuration (uncomment to use)
+# database:
+#   url: "duckdb:///./crypto.duckdb"
+
+# Google Cloud Storage (for cloud deployment)
 gcs:
-  bucket_name: ""
+  bucket_name: ""  # e.g., "crypto-lake-data"
 
+# Google Cloud Platform (for cloud deployment)
 gcp:
   project_id: ""
   region: ""

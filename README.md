@@ -41,15 +41,22 @@ A production-ready, local-first cryptocurrency market data pipeline for Windows 
 
 ```bash
 python -m venv venv
-venv\Scripts\activate
-pip install aiohttp websockets duckdb pandas pyarrow loguru pyyaml pytest streamlit plotly
+venv\Scripts\activate  # On Windows
+# source venv/bin/activate  # On Linux/Mac
+pip install -r requirements.txt
 ```
 
 ### 2. Configure
 
+```bash
+# Copy the example config
+cp config.yml.example config.yml
+```
+
 Edit `config.yml` to set:
-- `base_path`: Local data lake directory (default: `D:/CryptoDataLake`)
-- `symbols`: Trading pairs to track (default: SOLUSDT, SUIUSDT, ADAUSDT)
+- `base_path`: Local data lake directory (default: `./data` - relative, works anywhere)
+- `symbols`: Trading pairs to track (13 crypto pairs pre-configured)
+- `macro_minute.tickers`: Stock/FX/commodity tickers (17 pre-configured)
 
 ### 3. Run Pipeline
 

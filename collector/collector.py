@@ -269,6 +269,13 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
 async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", symbols: Optional[list[str]] = None) -> None:
     """
     Run the streaming collector with auto-reconnect and graceful shutdown (Ctrl+C).
+
+    Features:
+    - Exponential backoff with jitter on connection failures
+    - Configurable max backoff (default 5 minutes)
+    - Handles network errors, timeouts, and unexpected disconnections
+    - Tracks connection state and gap duration for monitoring
+    - Graceful shutdown on SIGINT/SIGTERM
     """
     setup_logging()
     ex_conf = get_exchange_config(config, exchange_name)
@@ -300,38 +307,66 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
         # ValueError/RuntimeError raised when not in main thread (orchestrator runs collector in thread)
         pass
 
-    backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
-    max_backoff = 60
+    # Configurable backoff settings
+    initial_backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
+    max_backoff = int(config["collector"].get("max_reconnect_backoff", 300)) or 300
+    jitter_factor = float(config["collector"].get("reconnect_jitter", 0.5))
+    backoff = initial_backoff
+
+    # Connection state tracking
+    last_connected_time: Optional[float] = None
+    disconnect_time: Optional[float] = None
+    reconnect_count = 0
 
     try:
         while not stop_event.is_set():
             try:
+                # Log reconnection with gap duration if this is a reconnect
+                if disconnect_time is not None:
+                    gap_seconds = time.time() - disconnect_time
+                    reconnect_count += 1
+                    logger.info(f"Reconnecting to WebSocket (attempt #{reconnect_count}, gap: {gap_seconds:.1f}s)")
+
+                last_connected_time = time.time()
                 await _consume_ws(url, writers, stop_event)
-                # If consume returns without exception and no stop requested, break
+
+                # If consume returns without exception and no stop requested, reconnect
                 if not stop_event.is_set():
+                    disconnect_time = time.time()
                     logger.warning("WebSocket consume ended unexpectedly; will reconnect.")
                     logger.warning("NetworkTimeoutWarning")
-                    # Add jitter to prevent thundering herd
-                    jitter = random.uniform(0, 0.5)
+                    jitter = random.uniform(0, jitter_factor)
                     await asyncio.sleep(backoff + jitter)
                     backoff = min(max_backoff, backoff * 2)
-            except (asyncio.TimeoutError, websockets.ConnectionClosed, ConnectionError) as e:
-                # Transient network failures - emit searchable warning token
-                logger.warning(f"Network timeout/connection issue: {e}")
+
+            except (asyncio.TimeoutError, websockets.ConnectionClosed, ConnectionError, OSError) as e:
+                # Transient network failures - includes OSError for "Network unreachable" etc.
+                disconnect_time = time.time() if disconnect_time is None else disconnect_time
+                logger.warning(f"Network timeout/connection issue: {type(e).__name__}: {e}")
                 logger.warning("NetworkTimeoutWarning")
                 # Exponential backoff with jitter to prevent thundering herd
-                jitter = random.uniform(0, 0.5)
-                await asyncio.sleep(backoff + jitter)
+                jitter = random.uniform(0, jitter_factor)
+                sleep_time = backoff + jitter
+                logger.info(f"Retrying in {sleep_time:.1f}s (backoff: {backoff}s, max: {max_backoff}s)")
+                await asyncio.sleep(sleep_time)
                 backoff = min(max_backoff, backoff * 2)
+
             except Exception as e:
-                # Unexpected errors - log and reconnect
-                logger.error(f"Collector error / reconnecting in {backoff}s: {e}")
+                # Unexpected errors - log full details and reconnect
+                disconnect_time = time.time() if disconnect_time is None else disconnect_time
+                logger.error(f"Collector error: {type(e).__name__}: {e}")
+                logger.info(f"Reconnecting in {backoff}s...")
                 await asyncio.sleep(backoff)
                 backoff = min(max_backoff, max(5, backoff * 2))
+
             else:
-                # Successful iteration; reset backoff
-                backoff = int(config["collector"].get("reconnect_backoff", 10)) or 5
+                # Successful connection established; reset backoff
+                if last_connected_time:
+                    logger.info(f"Connection stable, resetting backoff to {initial_backoff}s")
+                backoff = initial_backoff
+                disconnect_time = None
+
     finally:
         for w in writers.values():
             w.close()
-        logger.info("Collector stopped cleanly.")
+        logger.info(f"Collector stopped cleanly. Total reconnects during session: {reconnect_count}")
