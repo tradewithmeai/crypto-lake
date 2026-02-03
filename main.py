@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crypto Data Lake")
     parser.add_argument(
         "--mode",
-        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules", "orchestrate", "backfill_binance", "test"],
+        choices=["collector", "transformer", "validate", "compact", "macro_minute", "slice", "validate_rules", "orchestrate", "serve", "backfill_binance", "test"],
         required=True,
         help="Pipeline mode to run.",
     )
@@ -146,6 +146,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=60,
         help="Minutes between transformer runs in orchestrate mode (default: 60, 0 to disable).",
+    )
+    # API server arguments
+    parser.add_argument(
+        "--api_port",
+        type=int,
+        default=8000,
+        help="Port for API server in serve mode (default: 8000).",
     )
     # Testing mode flag
     parser.add_argument(
@@ -295,6 +302,13 @@ def main() -> None:
 
         logger.info(f"Backfill complete. Results: {results}")
         return
+
+    if args.mode == "serve":
+        # Serve mode: orchestrate + API server force-enabled
+        config.setdefault("api", {})["enabled"] = True
+        if args.api_port:
+            config.setdefault("api", {})["port"] = args.api_port
+        args.mode = "orchestrate"
 
     if args.mode == "orchestrate":
         # Get macro tickers from args or config

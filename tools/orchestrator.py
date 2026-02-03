@@ -86,6 +86,19 @@ class Orchestrator:
                 "start_time": datetime.now(timezone.utc)
             }
 
+        # API server configuration
+        self.api_enabled = config.get("api", {}).get("enabled", False)
+        self.api_host = config.get("api", {}).get("host", "127.0.0.1")
+        self.api_port = config.get("api", {}).get("port", 8000)
+
+        # Event bus for real-time data distribution to API clients
+        if self.api_enabled:
+            from api.event_bus import EventBus
+            ws_queue_size = config.get("api", {}).get("ws_queue_size", 1000)
+            self.event_bus = EventBus(max_queue_size=ws_queue_size)
+        else:
+            self.event_bus = None
+
         # Threading control
         self.stop_event = threading.Event()
         self.ws_thread: Optional[threading.Thread] = None
@@ -93,6 +106,7 @@ class Orchestrator:
         self.transform_thread: Optional[threading.Thread] = None
         self.macro_transform_thread: Optional[threading.Thread] = None
         self.health_thread: Optional[threading.Thread] = None
+        self.api_thread: Optional[threading.Thread] = None
 
         # Shared state for health monitoring
         self.health_data = {
@@ -120,6 +134,11 @@ class Orchestrator:
                 "last_run_start": None,
                 "last_run_end": None,
                 "last_error": None,
+            },
+            "api": {
+                "status": "disabled",
+                "host": None,
+                "port": None,
             },
         }
         self.health_lock = threading.Lock()
@@ -178,6 +197,16 @@ class Orchestrator:
         self.health_thread.start()
         logger.info("Started health monitoring thread")
 
+        # Start API server thread
+        if self.api_enabled:
+            self.api_thread = threading.Thread(target=self._run_api_server, daemon=True, name="api-server")
+            self.api_thread.start()
+            with self.health_lock:
+                self.health_data["api"]["status"] = "running"
+                self.health_data["api"]["host"] = self.api_host
+                self.health_data["api"]["port"] = self.api_port
+            logger.info(f"Started API server on {self.api_host}:{self.api_port}")
+
         logger.info("Orchestrator started successfully")
 
         # Wait for initial data write to complete before validation/health checks
@@ -207,6 +236,7 @@ class Orchestrator:
             ("Transformer", self.transform_thread),
             ("Macro transformer", self.macro_transform_thread),
             ("Health monitor", self.health_thread),
+            ("API server", self.api_thread),
         ]
 
         for name, thread in threads:
@@ -225,6 +255,7 @@ class Orchestrator:
                 self.health_data["macro_minute"]["status"] = "stopped"
                 self.health_data["transformer"]["status"] = "stopped"
                 self.health_data["macro_transformer"]["status"] = "stopped"
+                self.health_data["api"]["status"] = "stopped"
             self._write_health_metrics()
             logger.info("Wrote final heartbeat")
         except Exception as e:
@@ -235,6 +266,23 @@ class Orchestrator:
             self._print_test_summary()
 
         logger.info("Orchestrator stopped")
+
+    def _run_api_server(self):
+        """Run the FastAPI/Uvicorn API server in a separate thread."""
+        try:
+            import uvicorn
+            from api.server import create_app
+
+            app = create_app(
+                config=self.config,
+                event_bus=self.event_bus,
+                health_data=self.health_data,
+            )
+            uvicorn.run(app, host=self.api_host, port=self.api_port, log_level="info")
+        except Exception as e:
+            logger.exception(f"API server error: {e}")
+            with self.health_lock:
+                self.health_data["api"]["status"] = "error"
 
     def _run_ws_collector(self):
         """
@@ -255,7 +303,7 @@ class Orchestrator:
             async def run_with_stop_check():
                 # Start collector as a task
                 collector_task = asyncio.create_task(
-                    run_collector(self.config, exchange_name=self.exchange_name, symbols=self.symbols)
+                    run_collector(self.config, exchange_name=self.exchange_name, symbols=self.symbols, event_bus=self.event_bus)
                 )
 
                 # Poll stop event periodically

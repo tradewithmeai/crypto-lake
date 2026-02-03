@@ -208,7 +208,7 @@ def build_combined_stream_url(wss_url: str, symbols: list[str]) -> str:
         topics.append(f"{ls}@bookTicker")
     return base + "/".join(topics)
 
-async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_event: asyncio.Event) -> None:
+async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_event: asyncio.Event, event_bus=None) -> None:
     async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10, max_queue=2000) as ws:
         logger.info(f"Connected to {url}")
 
@@ -244,6 +244,11 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
             if writer:
                 writer.write_obj(rec)
 
+            # Publish to event bus for API WebSocket clients
+            if event_bus is not None:
+                event_bus.publish(f"{rec.get('stream', 'unknown')}:{sym}", rec)
+                event_bus.publish("all", rec)
+
             # Track latency with rolling statistics
             try:
                 latency_ms = rec["ts_recv"] - rec["ts_event"]
@@ -266,7 +271,7 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
             except Exception:
                 pass
 
-async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", symbols: Optional[list[str]] = None) -> None:
+async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", symbols: Optional[list[str]] = None, event_bus=None) -> None:
     """
     Run the streaming collector with auto-reconnect and graceful shutdown (Ctrl+C).
 
@@ -328,7 +333,7 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
                     logger.info(f"Reconnecting to WebSocket (attempt #{reconnect_count}, gap: {gap_seconds:.1f}s)")
 
                 last_connected_time = time.time()
-                await _consume_ws(url, writers, stop_event)
+                await _consume_ws(url, writers, stop_event, event_bus=event_bus)
 
                 # If consume returns without exception and no stop requested, reconnect
                 if not stop_event.is_set():

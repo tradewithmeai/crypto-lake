@@ -92,6 +92,16 @@ testing:
   backfill_days: 3
   base_path: "./data/test"
 
+# API server configuration
+api:
+  enabled: false                    # Set to true or use --mode serve
+  host: "127.0.0.1"                # Bind address (use 0.0.0.0 for network access)
+  port: 8000
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+  ws_queue_size: 1000               # Per-subscriber event buffer
+
 # GCS/GCP not needed for local testing
 gcs:
   bucket_name: ""
