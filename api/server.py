@@ -10,7 +10,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from api.auth import _get_or_create_secret
+from api.database import init_db
 from api.event_bus import EventBus
+from api.routes_auth import router as auth_router
 from api.routes_rest import router as rest_router
 from api.routes_ws import router as ws_router
 
@@ -50,10 +53,17 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # Initialize user database
+    base_path = config.get("general", {}).get("base_path", "./data")
+    db_path = os.path.join(base_path, "users.db")
+    init_db(db_path)
+
     # Store shared state
     app.state.config = config
     app.state.event_bus = event_bus
     app.state.health_data = health_data or {}
+    app.state.db_path = db_path
+    app.state.jwt_secret = _get_or_create_secret(base_path)
 
     # CORS middleware
     cors_origins = api_config.get("cors_origins", ["http://localhost:3000"])
@@ -66,6 +76,7 @@ def create_app(
     )
 
     # Register API routers
+    app.include_router(auth_router)
     app.include_router(rest_router)
     app.include_router(ws_router)
 

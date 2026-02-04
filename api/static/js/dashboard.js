@@ -18,13 +18,220 @@ let currentCandle = null;
 let currentCandleTime = null;
 let currentVolume = 0;
 let lastPrice = null;
+let authToken = null;
 
 // Timeframe in seconds
 const TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
 
+// ---- Google Sign-In ----
+
+async function initGoogleSignIn() {
+    try {
+        const resp = await fetch(API_BASE + '/auth/google-client-id');
+        if (!resp.ok) return; // Google not configured
+
+        const data = await resp.json();
+        const clientId = data.client_id;
+        if (!clientId) return;
+
+        // Show the Google button container
+        document.getElementById('google-signin-container').style.display = 'block';
+
+        // Wait for GIS library to load
+        if (typeof google === 'undefined' || !google.accounts) {
+            await new Promise(resolve => {
+                const check = setInterval(() => {
+                    if (typeof google !== 'undefined' && google.accounts) {
+                        clearInterval(check);
+                        resolve();
+                    }
+                }, 100);
+                // Give up after 5 seconds
+                setTimeout(() => { clearInterval(check); resolve(); }, 5000);
+            });
+        }
+
+        if (typeof google === 'undefined' || !google.accounts) return;
+
+        google.accounts.id.initialize({
+            client_id: clientId,
+            callback: handleGoogleResponse,
+        });
+        google.accounts.id.renderButton(
+            document.getElementById('google-signin-btn'),
+            { theme: 'filled_black', size: 'large', width: 296, text: 'signin_with' }
+        );
+    } catch (err) {
+        console.log('Google Sign-In not available:', err.message);
+    }
+}
+
+async function handleGoogleResponse(response) {
+    const errorEl = document.getElementById('login-error');
+    errorEl.textContent = '';
+    console.log('Google response received, sending to server...');
+
+    try {
+        const resp = await fetch(API_BASE + '/auth/google', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ credential: response.credential }),
+        });
+        const data = await resp.json();
+        console.log('Server response:', resp.status, data);
+        if (!resp.ok) {
+            errorEl.textContent = data.detail || 'Google sign-in failed';
+            return;
+        }
+        authToken = data.token;
+        showDashboard(data.user);
+        await startDashboard();
+    } catch (err) {
+        console.error('Google auth error:', err);
+        errorEl.textContent = 'Network error: ' + err.message;
+    }
+}
+
+// ---- Auth ----
+
+async function checkAuth() {
+    try {
+        const resp = await fetch(API_BASE + '/auth/me', { credentials: 'include' });
+        if (resp.ok) {
+            const user = await resp.json();
+            showDashboard(user);
+            return true;
+        }
+    } catch (err) {
+        // Not authenticated
+    }
+    showAuthOverlay();
+    return false;
+}
+
+function showAuthOverlay() {
+    document.getElementById('auth-overlay').style.display = 'flex';
+    document.getElementById('user-menu').style.display = 'none';
+}
+
+function hideAuthOverlay() {
+    document.getElementById('auth-overlay').style.display = 'none';
+}
+
+function showDashboard(user) {
+    hideAuthOverlay();
+    document.getElementById('user-menu').style.display = 'flex';
+    document.getElementById('username-display').textContent = user.username;
+}
+
+function setupAuthListeners() {
+    // Tab switching
+    document.querySelectorAll('.auth-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const isLogin = tab.dataset.tab === 'login';
+            document.getElementById('login-form').style.display = isLogin ? 'flex' : 'none';
+            document.getElementById('register-form').style.display = isLogin ? 'none' : 'flex';
+            document.getElementById('login-error').textContent = '';
+            document.getElementById('register-error').textContent = '';
+        });
+    });
+
+    // Login
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errorEl = document.getElementById('login-error');
+        errorEl.textContent = '';
+
+        const body = {
+            username: document.getElementById('login-username').value,
+            password: document.getElementById('login-password').value,
+        };
+
+        try {
+            const resp = await fetch(API_BASE + '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                errorEl.textContent = data.detail || 'Login failed';
+                return;
+            }
+            authToken = data.token;
+            showDashboard(data.user);
+            await startDashboard();
+        } catch (err) {
+            errorEl.textContent = 'Network error';
+        }
+    });
+
+    // Register
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errorEl = document.getElementById('register-error');
+        errorEl.textContent = '';
+
+        const body = {
+            username: document.getElementById('reg-username').value,
+            email: document.getElementById('reg-email').value,
+            password: document.getElementById('reg-password').value,
+        };
+
+        try {
+            const resp = await fetch(API_BASE + '/auth/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                errorEl.textContent = data.detail || 'Registration failed';
+                return;
+            }
+            authToken = data.token;
+            showDashboard(data.user);
+            await startDashboard();
+        } catch (err) {
+            errorEl.textContent = 'Network error';
+        }
+    });
+
+    // Logout
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+        try {
+            await fetch(API_BASE + '/auth/logout', {
+                method: 'POST',
+                credentials: 'include',
+            });
+        } catch (err) {
+            // Ignore
+        }
+        authToken = null;
+        if (ws) { ws.close(); ws = null; }
+        showAuthOverlay();
+    });
+}
+
 // ---- Initialization ----
 
 async function init() {
+    setupAuthListeners();
+    const authenticated = await checkAuth();
+    if (authenticated) {
+        await startDashboard();
+    } else {
+        // Initialize Google Sign-In on the login page
+        await initGoogleSignIn();
+    }
+}
+
+async function startDashboard() {
     await loadSymbols();
     setupEventListeners();
     createChart();
@@ -36,7 +243,8 @@ async function init() {
 
 async function loadSymbols() {
     try {
-        const resp = await fetch(API_BASE + '/symbols');
+        const resp = await fetch(API_BASE + '/symbols', { credentials: 'include' });
+        if (resp.status === 401) { showAuthOverlay(); return; }
         const data = await resp.json();
         const exchangeSelect = document.getElementById('exchange-select');
         const exchanges = data.exchanges || {};
@@ -75,7 +283,7 @@ function setupEventListeners() {
     document.getElementById('exchange-select').addEventListener('change', async (e) => {
         currentExchange = e.target.value;
         // Reload symbols for new exchange
-        const resp = await fetch(API_BASE + '/symbols');
+        const resp = await fetch(API_BASE + '/symbols', { credentials: 'include' });
         const data = await resp.json();
         const symbols = data.exchanges[currentExchange] || [];
         populateSymbols(symbols);
@@ -164,7 +372,8 @@ async function loadChartData() {
 
     try {
         const url = `${API_BASE}/bars/${currentSymbol}/latest?tf=${currentTf}&limit=500`;
-        const resp = await fetch(url);
+        const resp = await fetch(url, { credentials: 'include' });
+        if (resp.status === 401) { showAuthOverlay(); return; }
         const data = await resp.json();
 
         if (!data.data || data.data.length === 0) {
@@ -238,7 +447,11 @@ function connectWebSocket() {
 
     if (!currentSymbol) return;
 
-    const url = `${WS_BASE}/ws/stream?symbols=${currentSymbol}&types=trade`;
+    let url = `${WS_BASE}/ws/stream?symbols=${currentSymbol}&types=trade`;
+    // Pass token as query param if available
+    if (authToken) {
+        url += `&token=${encodeURIComponent(authToken)}`;
+    }
     ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -258,9 +471,14 @@ function connectWebSocket() {
         }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
         document.getElementById('ws-status').classList.remove('connected');
         document.getElementById('ws-status').classList.add('disconnected');
+        // Don't reconnect if auth failure
+        if (event.code === 4001) {
+            console.log('WebSocket auth failed');
+            return;
+        }
         // Auto-reconnect after 3 seconds
         setTimeout(() => {
             if (currentSymbol) connectWebSocket();

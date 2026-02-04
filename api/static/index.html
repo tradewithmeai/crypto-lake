@@ -5,8 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Crypto Lake</title>
     <link rel="stylesheet" href="/static/css/dashboard.css">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+    <!-- Auth overlay -->
+    <div id="auth-overlay" class="auth-overlay" style="display: none;">
+        <div class="auth-card">
+            <h2 class="auth-title">Crypto Lake</h2>
+            <!-- Google Sign-In -->
+            <div id="google-signin-container" style="display: none;">
+                <div id="google-signin-btn"></div>
+                <div class="auth-divider"><span>or</span></div>
+            </div>
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Login</button>
+                <button class="auth-tab" data-tab="register">Register</button>
+            </div>
+            <!-- Login form -->
+            <form id="login-form" class="auth-form">
+                <input type="text" id="login-username" placeholder="Username" required autocomplete="username">
+                <input type="password" id="login-password" placeholder="Password" required autocomplete="current-password">
+                <button type="submit" class="auth-submit">Login</button>
+                <div id="login-error" class="auth-error"></div>
+            </form>
+            <!-- Register form -->
+            <form id="register-form" class="auth-form" style="display: none;">
+                <input type="text" id="reg-username" placeholder="Username" required autocomplete="username">
+                <input type="email" id="reg-email" placeholder="Email" required autocomplete="email">
+                <input type="password" id="reg-password" placeholder="Password (min 8 chars)" required autocomplete="new-password">
+                <button type="submit" class="auth-submit">Register</button>
+                <div id="register-error" class="auth-error"></div>
+            </form>
+        </div>
+    </div>
+
     <header>
         <span class="logo">Crypto Lake</span>
         <div class="controls">
@@ -22,6 +54,10 @@
                 <span id="live-price">--</span>
                 <span id="price-change">--</span>
                 <span class="status-dot" id="ws-status" title="WebSocket status"></span>
+            </div>
+            <div class="user-menu" id="user-menu" style="display: none;">
+                <span id="username-display"></span>
+                <button id="logout-btn" class="logout-btn">Logout</button>
             </div>
         </div>
     </header>

@@ -1,10 +1,12 @@
 """WebSocket endpoint for streaming real-time trade and bookTicker events."""
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
+from api.auth import validate_ws_token
 from api.event_bus import EventBus
 
 router = APIRouter()
@@ -15,6 +17,7 @@ async def stream(
     ws: WebSocket,
     symbols: str = "*",
     types: str = "all",
+    token: Optional[str] = None,
 ):
     """
     Stream real-time events to WebSocket clients.
@@ -22,10 +25,24 @@ async def stream(
     Query params:
         symbols: Comma-separated symbol list or '*' for all (default: '*')
         types: Comma-separated types: 'trade', 'book', or 'all' (default: 'all')
+        token: JWT or API key for authentication
 
     Each message is a JSON object with the same schema as the raw collector events:
         {symbol, ts_event, ts_recv, price, qty, side, bid, ask, stream, trade_id}
     """
+    # Authenticate before accepting
+    db_path = ws.app.state.db_path
+    secret_key = ws.app.state.jwt_secret
+
+    # Also check cookie
+    if not token:
+        token = ws.cookies.get("access_token")
+
+    user = validate_ws_token(db_path, secret_key, token)
+    if not user:
+        await ws.close(code=4001, reason="Authentication required")
+        return
+
     await ws.accept()
 
     bus: EventBus = ws.app.state.event_bus

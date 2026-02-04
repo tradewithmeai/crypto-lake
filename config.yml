@@ -117,6 +117,9 @@ api:
     - "http://localhost:3000"
     - "http://localhost:8080"
   ws_queue_size: 1000               # Per-subscriber event buffer
+  jwt_expiry_hours: 24              # JWT token lifetime
+  allow_registration: true          # Set to false to disable new signups
+  google_client_id: "298443140757-39mqfeule5u1ttbv8mkidjg2bog5d6lj.apps.googleusercontent.com"
 
 # GCS/GCP not needed for local testing
 gcs:

@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import List, Optional
 
 import duckdb
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
+
+from api.auth import get_current_user
 
 from tools.db import connect_and_register_views
 
@@ -50,7 +52,7 @@ _TF_VIEWS = {
 
 
 @router.get("/symbols")
-async def get_symbols(request: Request):
+async def get_symbols(request: Request, user: dict = Depends(get_current_user)):
     """List all available crypto symbols grouped by exchange."""
     config = request.app.state.config
     exchanges = {}
@@ -67,6 +69,7 @@ async def get_bars(
     start: Optional[str] = Query(None, description="Start timestamp ISO format"),
     end: Optional[str] = Query(None, description="End timestamp ISO format"),
     limit: int = Query(1000, ge=1, le=50000),
+    user: dict = Depends(get_current_user),
 ):
     """Query historical OHLCV bars for a symbol."""
     config = request.app.state.config
@@ -109,6 +112,7 @@ async def get_latest_bars(
     symbol: str,
     tf: str = Query("1m", pattern="^(1s|1m|5m|1h)$"),
     limit: int = Query(60, ge=1, le=10000),
+    user: dict = Depends(get_current_user),
 ):
     """Get the latest N bars for a symbol."""
     config = request.app.state.config
@@ -134,7 +138,7 @@ async def get_latest_bars(
 
 
 @router.get("/macro")
-async def get_macro_tickers(request: Request):
+async def get_macro_tickers(request: Request, user: dict = Depends(get_current_user)):
     """List available macro tickers from config."""
     config = request.app.state.config
     tickers = config.get("macro_minute", {}).get("tickers", [])
@@ -148,6 +152,7 @@ async def get_macro_bars(
     start: Optional[str] = Query(None, description="Start timestamp ISO format"),
     end: Optional[str] = Query(None, description="End timestamp ISO format"),
     limit: int = Query(1000, ge=1, le=50000),
+    user: dict = Depends(get_current_user),
 ):
     """Query historical macro minute bars for a ticker."""
     config = request.app.state.config
@@ -183,7 +188,7 @@ async def get_macro_bars(
 
 
 @router.get("/health")
-async def get_health(request: Request):
+async def get_health(request: Request, user: dict = Depends(get_current_user)):
     """Get system health status."""
     health_data = getattr(request.app.state, "health_data", {})
     event_bus = getattr(request.app.state, "event_bus", None)
@@ -202,7 +207,7 @@ async def get_health(request: Request):
 
 
 @router.post("/refresh")
-async def refresh_db(request: Request):
+async def refresh_db(request: Request, user: dict = Depends(get_current_user)):
     """Force-refresh the DuckDB connection to pick up new parquet files."""
     config = request.app.state.config
     _refresh_db(config)
