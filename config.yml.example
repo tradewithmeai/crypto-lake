@@ -35,6 +35,22 @@ exchanges:
     rest_url: "https://api.binance.com/api/v3"
     wss_url: "wss://stream.binance.com:9443/ws"
 
+  - name: "coinbase"
+    symbols:
+      - BTC-USD
+      - ETH-USD
+      - SOL-USD
+    rest_url: "https://api.exchange.coinbase.com"
+    wss_url: "wss://ws-feed.exchange.coinbase.com"
+
+  - name: "kraken"
+    symbols:
+      - BTC/USD
+      - ETH/USD
+      - SOL/USD
+    rest_url: "https://api.kraken.com"
+    wss_url: "wss://ws.kraken.com/v2"
+
 collector:
   write_interval_sec: 60
   reconnect_backoff: 10

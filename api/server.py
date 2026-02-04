@@ -1,15 +1,20 @@
 """FastAPI application factory for Crypto Lake API server."""
 
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from api.event_bus import EventBus
 from api.routes_rest import router as rest_router
 from api.routes_ws import router as ws_router
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
 @asynccontextmanager
@@ -60,8 +65,17 @@ def create_app(
         allow_headers=["*"],
     )
 
-    # Register routers
+    # Register API routers
     app.include_router(rest_router)
     app.include_router(ws_router)
+
+    # Serve web dashboard
+    @app.get("/")
+    async def serve_dashboard():
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+    # Mount static files (CSS, JS)
+    if os.path.isdir(STATIC_DIR):
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return app

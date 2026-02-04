@@ -208,23 +208,34 @@ def build_combined_stream_url(wss_url: str, symbols: list[str]) -> str:
         topics.append(f"{ls}@bookTicker")
     return base + "/".join(topics)
 
-async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_event: asyncio.Event, event_bus=None) -> None:
+async def _consume_ws(adapter, writers: Dict[str, RotatingJSONLWriter], stop_event: asyncio.Event, event_bus=None) -> None:
+    url = adapter.build_ws_url()
     async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10, max_queue=2000) as ws:
         logger.info(f"Connected to {url}")
 
+        # Send subscription message if the exchange requires it
+        sub_msg = adapter.build_subscribe_message()
+        if sub_msg is not None:
+            if isinstance(sub_msg, list):
+                for msg in sub_msg:
+                    await ws.send(json.dumps(msg))
+                    logger.info(f"Sent subscription: {msg.get('params', {}).get('channel', 'unknown')}")
+            else:
+                await ws.send(json.dumps(sub_msg))
+                logger.info(f"Sent subscription message to {adapter.exchange_name}")
+
         # Latency tracking for operational visibility
-        latency_window = deque(maxlen=1000)  # Rolling window of last 1000 messages
+        latency_window = deque(maxlen=1000)
         last_summary_time = time.time()
-        summary_interval = 60  # Log summary every 60 seconds
+        summary_interval = 60
 
         while not stop_event.is_set():
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=60)
             except asyncio.TimeoutError:
-                # Periodic timeout—send a ping by letting websockets handle keepalive; continue loop
                 continue
             except websockets.ConnectionClosed:
-                logger.warning("WebSocket connection closed by server.")
+                logger.warning(f"WebSocket connection closed by {adapter.exchange_name} server.")
                 raise
             except Exception as e:
                 logger.error(f"WebSocket receive error: {e}")
@@ -236,7 +247,7 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
                 logger.warning("Received non-JSON message; skipping.")
                 continue
 
-            rec = parse_event(msg)
+            rec = adapter.parse_event(msg)
             if not rec or not rec.get("symbol"):
                 continue
             sym = rec["symbol"]
@@ -254,7 +265,6 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
                 latency_ms = rec["ts_recv"] - rec["ts_event"]
                 latency_window.append(latency_ms)
 
-                # Log summary statistics every 60 seconds
                 now = time.time()
                 if now - last_summary_time >= summary_interval and len(latency_window) > 0:
                     sorted_latencies = sorted(latency_window)
@@ -262,10 +272,10 @@ async def _consume_ws(url: str, writers: Dict[str, RotatingJSONLWriter], stop_ev
                     p95 = sorted_latencies[int(len(sorted_latencies) * 0.95)]
                     max_lat = sorted_latencies[-1]
 
-                    logger.info(f"Latency stats (last {len(latency_window)} msgs): p50={p50}ms, p95={p95}ms, max={max_lat}ms")
+                    logger.info(f"[{adapter.exchange_name}] Latency (last {len(latency_window)} msgs): p50={p50}ms, p95={p95}ms, max={max_lat}ms")
 
                     if p95 > 2000 or max_lat > 5000:
-                        logger.warning(f"High latency detected: p95={p95}ms, max={max_lat}ms")
+                        logger.warning(f"[{adapter.exchange_name}] High latency: p95={p95}ms, max={max_lat}ms")
 
                     last_summary_time = now
             except Exception:
@@ -283,18 +293,21 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
     - Graceful shutdown on SIGINT/SIGTERM
     """
     setup_logging()
+    from collector.exchanges import get_adapter
+
     ex_conf = get_exchange_config(config, exchange_name)
 
     if symbols is None or not symbols:
         symbols = ex_conf.get("symbols", [])
     logger.info(f"Starting collector for exchange={exchange_name} symbols={symbols}")
 
+    # Create exchange adapter
+    adapter = get_adapter(exchange_name, ex_conf["wss_url"], symbols)
+
     raw_root = get_raw_base_dir(config, exchange_name)
     writers: Dict[str, RotatingJSONLWriter] = {}
-    for s in symbols:
+    for s in adapter.get_writer_symbols():
         writers[s] = RotatingJSONLWriter(base_dir=raw_root, symbol=s, interval_sec=int(config["collector"]["write_interval_sec"]))
-
-    url = build_combined_stream_url(ex_conf["wss_url"], symbols)
 
     stop_event = asyncio.Event()
 
@@ -333,7 +346,7 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
                     logger.info(f"Reconnecting to WebSocket (attempt #{reconnect_count}, gap: {gap_seconds:.1f}s)")
 
                 last_connected_time = time.time()
-                await _consume_ws(url, writers, stop_event, event_bus=event_bus)
+                await _consume_ws(adapter, writers, stop_event, event_bus=event_bus)
 
                 # If consume returns without exception and no stop requested, reconnect
                 if not stop_event.is_set():

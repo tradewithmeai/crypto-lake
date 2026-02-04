@@ -30,6 +30,32 @@ FROM read_parquet('@@BASE@@/parquet/binance/**/*.parquet')
 WHERE window_start IS NOT NULL
 ORDER BY symbol, ts;
 
+-- Coinbase 1-second bars (if data exists)
+CREATE OR REPLACE VIEW bars_1s_coinbase AS
+SELECT
+    'coinbase' AS exchange,
+    symbol,
+    window_start AS ts,
+    open, high, low, close,
+    volume_base, volume_quote, trade_count,
+    vwap, bid, ask, spread
+FROM read_parquet('@@BASE@@/parquet/coinbase/**/*.parquet')
+WHERE window_start IS NOT NULL
+ORDER BY symbol, ts;
+
+-- Kraken 1-second bars (if data exists)
+CREATE OR REPLACE VIEW bars_1s_kraken AS
+SELECT
+    'kraken' AS exchange,
+    symbol,
+    window_start AS ts,
+    open, high, low, close,
+    volume_base, volume_quote, trade_count,
+    vwap, bid, ask, spread
+FROM read_parquet('@@BASE@@/parquet/kraken/**/*.parquet')
+WHERE window_start IS NOT NULL
+ORDER BY symbol, ts;
+
 -- ========================================
 -- 2) bars_1m - 1-minute rollup from our 1s bars
 -- ========================================

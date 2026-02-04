@@ -51,12 +51,12 @@ _TF_VIEWS = {
 
 @router.get("/symbols")
 async def get_symbols(request: Request):
-    """List all available crypto symbols from config."""
+    """List all available crypto symbols grouped by exchange."""
     config = request.app.state.config
-    symbols = []
+    exchanges = {}
     for ex in config.get("exchanges", []):
-        symbols.extend(ex.get("symbols", []))
-    return {"exchange": "binance", "symbols": sorted(set(symbols))}
+        exchanges[ex["name"]] = sorted(ex.get("symbols", []))
+    return {"exchanges": exchanges}
 
 
 @router.get("/bars/{symbol}")

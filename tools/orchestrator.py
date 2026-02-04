@@ -101,15 +101,28 @@ class Orchestrator:
 
         # Threading control
         self.stop_event = threading.Event()
-        self.ws_thread: Optional[threading.Thread] = None
+        self.ws_threads: List[threading.Thread] = []  # One per exchange
         self.macro_thread: Optional[threading.Thread] = None
         self.transform_thread: Optional[threading.Thread] = None
         self.macro_transform_thread: Optional[threading.Thread] = None
         self.health_thread: Optional[threading.Thread] = None
         self.api_thread: Optional[threading.Thread] = None
 
+        # Build per-exchange collector health entries
+        self.exchange_names = [ex["name"] for ex in config.get("exchanges", [{"name": exchange_name}])]
+
         # Shared state for health monitoring
+        collectors_health = {}
+        for ex_name in self.exchange_names:
+            collectors_health[ex_name] = {
+                "status": "stopped",
+                "last_latency_p50_ms": 0.0,
+                "last_latency_p95_ms": 0.0,
+                "last_seen_ts": None,
+            }
         self.health_data = {
+            "collectors": collectors_health,
+            # Legacy single-exchange field for backward compatibility
             "collector": {
                 "status": "stopped",
                 "last_latency_p50_ms": 0.0,
@@ -160,10 +173,22 @@ class Orchestrator:
         """
         logger.info("Starting orchestrator...")
 
-        # Start WebSocket collector thread
-        self.ws_thread = threading.Thread(target=self._run_ws_collector, daemon=False, name="ws-collector")
-        self.ws_thread.start()
-        logger.info("Started WebSocket collector thread")
+        # Start one WebSocket collector thread per exchange
+        for ex_config in self.config.get("exchanges", []):
+            ex_name = ex_config["name"]
+            ex_symbols = self.symbols if (self.symbols and ex_name == self.exchange_name) else ex_config.get("symbols", [])
+            if not ex_symbols:
+                logger.warning(f"No symbols configured for {ex_name}, skipping")
+                continue
+            t = threading.Thread(
+                target=self._run_ws_collector,
+                args=(ex_name, ex_symbols),
+                daemon=False,
+                name=f"ws-collector-{ex_name}",
+            )
+            t.start()
+            self.ws_threads.append(t)
+            logger.info(f"Started WebSocket collector thread for {ex_name} ({len(ex_symbols)} symbols)")
 
         # Start macro data fetcher thread
         if self.macro_tickers:
@@ -230,14 +255,16 @@ class Orchestrator:
         self.stop_event.set()
 
         # Wait for threads to join
-        threads = [
-            ("WebSocket collector", self.ws_thread),
+        threads = []
+        for t in self.ws_threads:
+            threads.append((f"Collector ({t.name})", t))
+        threads.extend([
             ("Macro fetcher", self.macro_thread),
             ("Transformer", self.transform_thread),
             ("Macro transformer", self.macro_transform_thread),
             ("Health monitor", self.health_thread),
             ("API server", self.api_thread),
-        ]
+        ])
 
         for name, thread in threads:
             if thread and thread.is_alive():
@@ -284,60 +311,61 @@ class Orchestrator:
             with self.health_lock:
                 self.health_data["api"]["status"] = "error"
 
-    def _run_ws_collector(self):
+    def _run_ws_collector(self, exchange_name: str, symbols: list):
         """
-        Run WebSocket collector in a separate thread with its own event loop.
+        Run WebSocket collector for a specific exchange in a separate thread.
         """
         try:
             with self.health_lock:
+                if exchange_name in self.health_data.get("collectors", {}):
+                    self.health_data["collectors"][exchange_name]["status"] = "running"
+                    self.health_data["collectors"][exchange_name]["last_seen_ts"] = datetime.now(timezone.utc).isoformat()
+                # Legacy field
                 self.health_data["collector"]["status"] = "running"
                 self.health_data["collector"]["last_seen_ts"] = datetime.now(timezone.utc).isoformat()
 
-            logger.info("Starting WebSocket collector...")
+            logger.info(f"Starting WebSocket collector for {exchange_name}...")
 
-            # Create new event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # Run collector until stop event is set
             async def run_with_stop_check():
-                # Start collector as a task
                 collector_task = asyncio.create_task(
-                    run_collector(self.config, exchange_name=self.exchange_name, symbols=self.symbols, event_bus=self.event_bus)
+                    run_collector(self.config, exchange_name=exchange_name, symbols=symbols, event_bus=self.event_bus)
                 )
 
-                # Poll stop event periodically
                 while not self.stop_event.is_set():
                     if collector_task.done():
-                        # Collector exited, check for exception
                         try:
                             await collector_task
                         except Exception as e:
-                            logger.exception(f"WebSocket collector exited with error: {e}")
+                            logger.exception(f"[{exchange_name}] Collector exited with error: {e}")
                             with self.health_lock:
-                                self.health_data["collector"]["status"] = "error"
+                                if exchange_name in self.health_data.get("collectors", {}):
+                                    self.health_data["collectors"][exchange_name]["status"] = "error"
                         return
 
                     await asyncio.sleep(1)
 
-                # Stop requested, cancel collector task
-                logger.info("Stop requested, cancelling WebSocket collector...")
+                logger.info(f"Stop requested, cancelling {exchange_name} collector...")
                 collector_task.cancel()
                 try:
                     await collector_task
                 except asyncio.CancelledError:
-                    logger.info("WebSocket collector cancelled")
+                    logger.info(f"[{exchange_name}] Collector cancelled")
 
             loop.run_until_complete(run_with_stop_check())
             loop.close()
 
         except Exception as e:
-            logger.exception(f"WebSocket collector thread failed: {e}")
+            logger.exception(f"[{exchange_name}] Collector thread failed: {e}")
             with self.health_lock:
-                self.health_data["collector"]["status"] = "error"
+                if exchange_name in self.health_data.get("collectors", {}):
+                    self.health_data["collectors"][exchange_name]["status"] = "error"
         finally:
             with self.health_lock:
-                self.health_data["collector"]["status"] = "stopped"
+                if exchange_name in self.health_data.get("collectors", {}):
+                    self.health_data["collectors"][exchange_name]["status"] = "stopped"
             logger.info("WebSocket collector thread exiting")
 
     def _run_macro_loop(self):
