@@ -24,6 +24,27 @@ from tools.common import (
 )
 
 
+def _log_connection_event(raw_root: str, exchange_name: str, event: str, reason: str = "", gap_seconds: float = 0):
+    """Append a connection event to a structured JSONL file for gap tracking."""
+    from datetime import datetime, timezone
+    events_dir = os.path.join(raw_root, "_events")
+    os.makedirs(events_dir, exist_ok=True)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = os.path.join(events_dir, f"connections_{date_str}.jsonl")
+    record = {
+        "event": event,
+        "exchange": exchange_name,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "gap_seconds": round(gap_seconds, 1),
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # Don't let event logging break the collector
+
+
 class NetworkTimeoutWarning(UserWarning):
     """
     Custom warning for network timeout and connection issues.
@@ -344,8 +365,10 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
                     gap_seconds = time.time() - disconnect_time
                     reconnect_count += 1
                     logger.info(f"Reconnecting to WebSocket (attempt #{reconnect_count}, gap: {gap_seconds:.1f}s)")
+                    _log_connection_event(raw_root, exchange_name, "reconnecting", gap_seconds=gap_seconds)
 
                 last_connected_time = time.time()
+                _log_connection_event(raw_root, exchange_name, "connected")
                 await _consume_ws(adapter, writers, stop_event, event_bus=event_bus)
 
                 # If consume returns without exception and no stop requested, reconnect
@@ -353,12 +376,15 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
                     disconnect_time = time.time()
                     logger.warning("WebSocket consume ended unexpectedly; will reconnect.")
                     logger.warning("NetworkTimeoutWarning")
+                    _log_connection_event(raw_root, exchange_name, "disconnected", reason="unexpected_end")
                     jitter = random.uniform(0, jitter_factor)
                     await asyncio.sleep(backoff + jitter)
                     backoff = min(max_backoff, backoff * 2)
 
             except (asyncio.TimeoutError, websockets.ConnectionClosed, ConnectionError, OSError) as e:
                 # Transient network failures - includes OSError for "Network unreachable" etc.
+                if disconnect_time is None:
+                    _log_connection_event(raw_root, exchange_name, "disconnected", reason=f"{type(e).__name__}: {e}")
                 disconnect_time = time.time() if disconnect_time is None else disconnect_time
                 logger.warning(f"Network timeout/connection issue: {type(e).__name__}: {e}")
                 logger.warning("NetworkTimeoutWarning")
@@ -371,6 +397,8 @@ async def run_collector(config: Dict[str, Any], exchange_name: str = "binance", 
 
             except Exception as e:
                 # Unexpected errors - log full details and reconnect
+                if disconnect_time is None:
+                    _log_connection_event(raw_root, exchange_name, "disconnected", reason=f"{type(e).__name__}: {e}")
                 disconnect_time = time.time() if disconnect_time is None else disconnect_time
                 logger.error(f"Collector error: {type(e).__name__}: {e}")
                 logger.info(f"Reconnecting in {backoff}s...")

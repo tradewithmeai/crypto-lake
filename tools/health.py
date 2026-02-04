@@ -18,6 +18,54 @@ from loguru import logger
 from tools.common import ensure_dir, wait_for_parquet_files
 
 
+def summarize_connection_events(base_path: str, day_str: str) -> Dict[str, Any]:
+    """
+    Read connection event logs and summarize gaps for each exchange.
+
+    Args:
+        base_path: Base path to data lake
+        day_str: Date string in YYYY-MM-DD format
+
+    Returns:
+        Dictionary with per-exchange gap statistics
+    """
+    result = {}
+    events_dir = os.path.join(base_path, "raw")
+
+    # Scan all exchange directories for _events folders
+    if not os.path.isdir(events_dir):
+        return result
+
+    for exchange_dir in os.listdir(events_dir):
+        events_path = os.path.join(events_dir, exchange_dir, "_events", f"connections_{day_str}.jsonl")
+        if not os.path.isfile(events_path):
+            continue
+
+        events = []
+        try:
+            with open(events_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        events.append(json.loads(line))
+        except Exception:
+            continue
+
+        disconnects = [e for e in events if e.get("event") == "disconnected"]
+        reconnects = [e for e in events if e.get("event") == "reconnecting"]
+        total_gap_seconds = sum(e.get("gap_seconds", 0) for e in reconnects)
+
+        result[exchange_dir] = {
+            "disconnect_count": len(disconnects),
+            "reconnect_count": len(reconnects),
+            "total_gap_seconds": round(total_gap_seconds, 1),
+            "last_event": events[-1].get("event", "") if events else "",
+            "last_event_ts": events[-1].get("ts", "") if events else "",
+        }
+
+    return result
+
+
 def check_disk_space(base_path: str) -> Dict[str, Any]:
     """
     Check disk usage for the data directory and root filesystem.
@@ -301,6 +349,12 @@ def _write_markdown_report(md_path: str, payload: Dict[str, Any]):
 
 ---
 
+## Connection Gaps (Today)
+
+{_format_connection_gaps(payload.get('connection_events', {}))}
+
+---
+
 ## Disk Space
 
 {_format_disk_space_section(payload.get('disk', {}))}
@@ -351,6 +405,33 @@ def _format_macro_status_text(status: str, macro_data: Dict[str, Any]) -> str:
         return f"WARNING: The macro fetcher encountered an error: {macro_data.get('last_error', 'Unknown')}"
     else:
         return "Status unknown."
+
+
+def _format_connection_gaps(events_data: Dict[str, Any]) -> str:
+    """Format connection gap data for markdown report."""
+    if not events_data:
+        return "No connection events recorded today (or events logging not yet active)."
+
+    output = "| Exchange | Disconnects | Total Gap | Last Event |\n"
+    output += "|----------|-------------|-----------|------------|\n"
+
+    for exchange, stats in sorted(events_data.items()):
+        gap_secs = stats.get("total_gap_seconds", 0)
+        if gap_secs >= 3600:
+            gap_str = f"{gap_secs/3600:.1f}h"
+        elif gap_secs >= 60:
+            gap_str = f"{gap_secs/60:.1f}m"
+        else:
+            gap_str = f"{gap_secs:.0f}s"
+
+        last_event = stats.get("last_event", "")
+        last_ts = stats.get("last_event_ts", "")
+        if last_ts:
+            last_ts = last_ts.split("T")[1][:8] if "T" in last_ts else last_ts
+
+        output += f"| {exchange} | {stats.get('disconnect_count', 0)} | {gap_str} | {last_event} @ {last_ts} |\n"
+
+    return output
 
 
 def _format_disk_space_section(disk_data: Dict[str, Any]) -> str:

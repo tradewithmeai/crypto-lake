@@ -88,26 +88,9 @@ def _aggregate_bars_1s(df: pd.DataFrame, symbol: str, second: int = 1) -> pd.Dat
     if "bid" in bars_df.columns and "ask" in bars_df.columns:
         bars_df["spread"] = (bars_df["ask"] - bars_df["bid"]).where((bars_df["ask"].notna()) & (bars_df["bid"].notna()))
 
-    # Reindex to fill gaps
-    if not df.empty:
-        full_index = pd.date_range(df["sec"].min(), df["sec"].max(), freq=f"{second}s", tz=timezone.utc)
-        bars_df = bars_df.reindex(full_index)
-
-    # Forward-fill close into open/high/low/close for missing rows, zero-fill volumes
-    bars_df["close"] = bars_df["close"].ffill()
-    for col in ("open", "high", "low"):
-        bars_df[col] = bars_df[col].fillna(bars_df["close"])
-    for col in ("volume_base", "volume_quote", "trade_count"):
-        if col in bars_df.columns:
-            bars_df[col] = bars_df[col].fillna(0)
-    if "vwap" in bars_df.columns:
-        bars_df["vwap"] = bars_df["vwap"].fillna(bars_df["close"])
-    if "bid" in bars_df.columns:
-        bars_df["bid"] = bars_df["bid"].ffill()
-    if "ask" in bars_df.columns:
-        bars_df["ask"] = bars_df["ask"].ffill()
-    if "spread" in bars_df.columns:
-        bars_df["spread"] = bars_df["spread"].ffill()
+    # Drop rows with no actual trade data (gap periods).
+    # Missing data stays missing rather than being fabricated with forward-fill.
+    bars_df = bars_df.dropna(subset=["close"])
 
     # Finalize schema
     out = bars_df.reset_index().rename(columns={"index": "window_start"})

@@ -23,7 +23,7 @@ setup_logging()
 
 from collector.collector import run_collector
 from tools.macro_minute import fetch_yf_1m, write_parquet, _read_existing_data
-from tools.health import write_heartbeat, summarize_files
+from tools.health import write_heartbeat, summarize_files, summarize_connection_events
 from tools.common import wait_for_parquet_files
 from transformer.transformer import run_transformer
 
@@ -699,6 +699,13 @@ class Orchestrator:
             logger.warning(f"Failed to collect file statistics: {e}")
             file_stats = {"raw_count_today": 0, "parquet_1s_rows_today": 0, "macro_min_rows_today": 0}
 
+        # Collect connection gap statistics
+        try:
+            connection_events = summarize_connection_events(self.base_path, now.strftime("%Y-%m-%d"))
+        except Exception as e:
+            logger.warning(f"Failed to collect connection events: {e}")
+            connection_events = {}
+
         # Build health payload
         with self.health_lock:
             payload = {
@@ -706,6 +713,7 @@ class Orchestrator:
                 "collector": self.health_data["collector"].copy(),
                 "macro_minute": self.health_data["macro_minute"].copy(),
                 "files": file_stats,
+                "connection_events": connection_events,
             }
 
         # Write to JSON and Markdown

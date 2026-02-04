@@ -403,6 +403,33 @@ async function loadChartData() {
         candleSeries.setData(candles);
         volumeSeries.setData(volumes);
 
+        // Detect gaps and add bright markers
+        const expectedInterval = TF_SECONDS[currentTf] || 60;
+        const gapMarkers = [];
+        for (let i = 1; i < candles.length; i++) {
+            const timeDiff = candles[i].time - candles[i - 1].time;
+            if (timeDiff > expectedInterval * 1.5) {
+                const gapMins = Math.round(timeDiff / 60);
+                gapMarkers.push({
+                    time: candles[i - 1].time,
+                    position: 'belowBar',
+                    color: '#ff9800',
+                    shape: 'arrowUp',
+                    text: gapMins >= 60 ? `GAP ${Math.round(gapMins/60)}h` : `GAP ${gapMins}m`,
+                });
+            }
+        }
+        candleSeries.setMarkers(gapMarkers);
+
+        // Show/hide gap counter
+        const gapEl = document.getElementById('gap-indicator');
+        if (gapMarkers.length > 0) {
+            gapEl.textContent = `${gapMarkers.length} gap${gapMarkers.length > 1 ? 's' : ''}`;
+            gapEl.style.display = 'inline';
+        } else {
+            gapEl.style.display = 'none';
+        }
+
         // Update price display from latest bar
         const latest = bars[bars.length - 1];
         updatePriceDisplay(latest.close, bars.length > 1 ? bars[bars.length - 2].close : latest.open);

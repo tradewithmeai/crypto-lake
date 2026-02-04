@@ -74,7 +74,8 @@ SELECT
     last(vwap) AS vwap,
     last(bid) AS bid,
     last(ask) AS ask,
-    last(spread) AS spread
+    last(spread) AS spread,
+    count(*) AS bar_count
 FROM bars_1s
 GROUP BY exchange, symbol, date_trunc('minute', ts)
 ORDER BY exchange, symbol, ts;
@@ -198,7 +199,8 @@ SELECT
     last(vwap) AS vwap,
     last(bid) AS bid,
     last(ask) AS ask,
-    last(spread) AS spread
+    last(spread) AS spread,
+    count(*) AS bar_count
 FROM bars_1s
 GROUP BY exchange, symbol, date_trunc('minute', ts) - INTERVAL ((extract('minute' FROM ts)::INTEGER % 5) * 60) second
 ORDER BY exchange, symbol, ts;
@@ -221,7 +223,8 @@ SELECT
     last(vwap) AS vwap,
     last(bid) AS bid,
     last(ask) AS ask,
-    last(spread) AS spread
+    last(spread) AS spread,
+    count(*) AS bar_count
 FROM bars_1s
 GROUP BY exchange, symbol, date_trunc('minute', ts) - INTERVAL ((extract('minute' FROM ts)::INTEGER % 15) * 60) second
 ORDER BY exchange, symbol, ts;
@@ -244,7 +247,8 @@ SELECT
     last(vwap) AS vwap,
     last(bid) AS bid,
     last(ask) AS ask,
-    last(spread) AS spread
+    last(spread) AS spread,
+    count(*) AS bar_count
 FROM bars_1s
 GROUP BY exchange, symbol, date_trunc('hour', ts)
 ORDER BY exchange, symbol, ts;
@@ -278,7 +282,8 @@ SELECT
     CASE
         WHEN sum(volume_base) > 0 THEN sum(volume_quote) / sum(volume_base)
         ELSE last(close)
-    END AS vwap
+    END AS vwap,
+    count(*) AS bar_count
 FROM bars_1s
 GROUP BY exchange, symbol, CAST(ts AS DATE)
 ORDER BY exchange, symbol, date;
