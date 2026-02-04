@@ -47,6 +47,7 @@ _TF_VIEWS = {
     "1s": "bars_1s",
     "1m": "bars_1m",
     "5m": "bars_5m",
+    "15m": "bars_15m",
     "1h": "bars_1h",
 }
 
@@ -65,7 +66,7 @@ async def get_symbols(request: Request, user: dict = Depends(get_current_user)):
 async def get_bars(
     request: Request,
     symbol: str,
-    tf: str = Query("1m", pattern="^(1s|1m|5m|1h)$"),
+    tf: str = Query("1m", pattern="^(1s|1m|5m|15m|1h)$"),
     start: Optional[str] = Query(None, description="Start timestamp ISO format"),
     end: Optional[str] = Query(None, description="End timestamp ISO format"),
     limit: int = Query(1000, ge=1, le=50000),
@@ -110,7 +111,7 @@ async def get_bars(
 async def get_latest_bars(
     request: Request,
     symbol: str,
-    tf: str = Query("1m", pattern="^(1s|1m|5m|1h)$"),
+    tf: str = Query("1m", pattern="^(1s|1m|5m|15m|1h)$"),
     limit: int = Query(60, ge=1, le=10000),
     user: dict = Depends(get_current_user),
 ):

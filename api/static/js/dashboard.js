@@ -21,7 +21,7 @@ let lastPrice = null;
 let authToken = null;
 
 // Timeframe in seconds
-const TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
+const TF_SECONDS = { '1s': 1, '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
 
 // ---- Google Sign-In ----
 

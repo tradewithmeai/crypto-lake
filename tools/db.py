@@ -88,6 +88,25 @@ def load_views_sql(base_path: str, sql_path: str = "sql/views.sql") -> str:
     return sql_resolved
 
 
+def _split_sql_statements(sql: str) -> list:
+    """Split SQL text into individual statements, handling semicolons correctly."""
+    statements = []
+    current = []
+    for line in sql.split("\n"):
+        stripped = line.strip()
+        # Skip pure comment lines
+        if stripped.startswith("--"):
+            continue
+        current.append(line)
+        if stripped.endswith(";"):
+            statements.append("\n".join(current))
+            current = []
+    # Catch any trailing statement without semicolon
+    if current and any(l.strip() for l in current):
+        statements.append("\n".join(current))
+    return statements
+
+
 def connect_and_register_views(
     base_path: str,
     sql_path: str = "sql/views.sql",
@@ -165,18 +184,38 @@ def connect_and_register_views(
     else:
         logger.warning(f"No parquet files matched {test_pattern}")
 
-    # Execute all view definitions
-    # views.sql contains multiple CREATE OR REPLACE VIEW statements
-    # Note: Some views may reference optional data sources (klines, derivs, macro)
-    # that don't exist yet. We register views individually to handle failures gracefully.
-    try:
-        conn.execute(sql)
-        logger.debug(f"Successfully registered views from {sql_path}")
-    except Exception as e:
-        # DuckDB may fail if optional data sources (klines, derivs) don't exist
-        # Log warning but continue - core views (bars_1s, bars_1m) may still work
-        logger.warning(f"Some views failed to register (may be due to missing optional data): {e}")
-        logger.info("Core views (bars_1s, bars_1m) should still be available if parquet data exists")
+    # Execute view definitions individually so optional view failures
+    # (klines, derivs, macro) don't prevent required views from registering.
+    # Split on CREATE OR REPLACE VIEW and also handle PRAGMA statements.
+    registered = []
+    failed = []
+    for statement in _split_sql_statements(sql):
+        statement = statement.strip()
+        if not statement:
+            continue
+        try:
+            conn.execute(statement)
+            # Extract view name for logging
+            if "VIEW" in statement.upper():
+                parts = statement.split()
+                idx = next((i for i, p in enumerate(parts) if p.upper() == "VIEW"), -1)
+                if idx >= 0 and idx + 1 < len(parts):
+                    registered.append(parts[idx + 1])
+        except Exception as e:
+            # Extract view name from failed statement
+            view_name = "unknown"
+            if "VIEW" in statement.upper():
+                parts = statement.split()
+                idx = next((i for i, p in enumerate(parts) if p.upper() == "VIEW"), -1)
+                if idx >= 0 and idx + 1 < len(parts):
+                    view_name = parts[idx + 1]
+            failed.append(view_name)
+            logger.debug(f"View {view_name} skipped (missing data source): {e}")
+
+    if registered:
+        logger.info(f"Registered {len(registered)} views: {', '.join(registered)}")
+    if failed:
+        logger.warning(f"Skipped {len(failed)} optional views (missing data): {', '.join(failed)}")
 
     return conn
 
